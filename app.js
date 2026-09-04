@@ -271,7 +271,7 @@ Screens.today = () => {
   const unpaid = S.orders.filter((o) => o.paymentStatus !== 'paid'); const unpaidAmt = unpaid.reduce((s, o) => s + Math.max(0, o.total - o.paidAmount), 0);
   const revenue = doneToday.reduce((s, o) => s + o.total, 0);
   const od = S.settings.onedrive;
-  app.innerHTML = `<div class="stack pad-sticky" style="gap:14px">
+  app.innerHTML = `<div class="stack pad-sticky tabbed" style="gap:14px">
     <div class="small muted">${fmtDay(nowISO())}</div>
     ${od.connected && od.needsLogin ? `<div class="banner err">انتهت جلسة OneDrive. <a href="#/settings/backup">أعيدي تسجيل الدخول</a> ليستمر النسخ التلقائي.</div>` : ''}
     <div class="row"><div class="stat"><span class="num gold">${openToday.length}</span><span class="small muted">مفتوحة اليوم</span></div>
@@ -283,7 +283,7 @@ Screens.today = () => {
     ${upcoming.length ? `<div class="section"><h2>القادم</h2><span class="muted">${upcoming.length}</span></div>${upcoming.map((o) => orderCard(o, { showDay: true })).join('')}` : ''}
     ${doneToday.length ? `<div class="section"><h2>تم توصيلها اليوم</h2><span class="gold strong">${money(revenue)}</span></div>${doneToday.map((o) => `<a class="orow" href="#/order/${o.id}"><span class="seal sm">#${pad3(o.number)}</span><div class="grow"><div class="row between"><span class="strong">${esc(o.customerName) || 'بدون اسم'}</span><span class="gold">${money(o.total)}</span></div><div class="small muted ellip">${esc(itemsSummary(o))}</div></div></a>`).join('')}` : ''}
   </div>
-  <div class="sticky"><a class="btn" href="#/order/new" style="font-size:17px;padding:14px">${ico('plus')} طلب جديد</a></div>`;
+  <div class="sticky above-tabs"><a class="btn" href="#/order/new" style="font-size:17px;padding:14px">${ico('plus')} طلب جديد</a></div>`;
   bindCardActions(app);
 };
 
@@ -299,13 +299,13 @@ Screens.orders = () => {
   if (F.q) { const q = F.q.toLowerCase(); list = list.filter((o) => (o.customerName || '').toLowerCase().includes(q) || (o.customerPhone || '').includes(q) || String(o.number).includes(q)); }
   list.sort((a, b) => (a.status === 'delivered') - (b.status === 'delivered') || (F.quick === 'delivered' ? b.dueAt.localeCompare(a.dueAt) : a.dueAt.localeCompare(b.dueAt)));
   const quicks = [['open', 'مفتوحة'], ['unpaid', 'غير مدفوعة'], ['delivered', 'تم توصيلها'], ['all', 'الكل']];
-  app.innerHTML = `<div class="stack pad-sticky">
+  app.innerHTML = `<div class="stack pad-sticky tabbed">
     <input class="in" id="q" placeholder="بحث بالاسم أو الجوال أو الرقم" value="${esc(F.q)}">
     <div class="chips">${quicks.map(([k, l]) => `<button class="chip ${F.quick === k ? 'on' : ''} ${k === 'unpaid' ? 'red' : ''}" data-q="${k}">${l}</button>`).join('')}</div>
     <div class="cattabs">${S.methods.filter((m) => m.active).map((m) => `<button class="chip ${F.methodId === m.id ? 'on' : ''}" data-m="${m.id}">${esc(m.name)}</button>`).join('')}</div>
     <div class="stack">${list.length ? list.map((o) => orderCard(o, { showDay: true })).join('') : emptyBlock('لا يوجد طلبات هنا', 'جرّبي فلتر مختلف أو أنشئي طلباً جديداً.')}</div>
   </div>
-  <div class="sticky"><a class="btn" href="#/order/new" style="font-size:17px;padding:14px">${ico('plus')} طلب جديد</a></div>`;
+  <div class="sticky above-tabs"><a class="btn" href="#/order/new" style="font-size:17px;padding:14px">${ico('plus')} طلب جديد</a></div>`;
   $('#q').oninput = (e) => { F.q = e.target.value; const v = e.target.value; Screens.orders(); const i = $('#q'); i.focus(); i.value = v; i.setSelectionRange(v.length, v.length); };
   app.querySelectorAll('[data-q]').forEach((b) => (b.onclick = () => { F.quick = b.dataset.q; Screens.orders(); }));
   app.querySelectorAll('[data-m]').forEach((b) => (b.onclick = () => { F.methodId = F.methodId === b.dataset.m ? null : b.dataset.m; Screens.orders(); }));
