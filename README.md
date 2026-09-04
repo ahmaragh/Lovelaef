@@ -1,7 +1,7 @@
 # ورقة حُب — Web app (v1)
 
 Single-page web app. Opens in Safari, added to the Home Screen like an app. All data lives in the browser storage on her phone.
-Files: `index.html`, `app.js`, `sw.js`, `manifest.json`, `icon-192.png`, `icon-512.png`, `apple-touch-icon.png`.
+Files: `index.html`, `app.js`, `photos.js`, `sw.js`, `manifest.json`, `icon-192.png`, `icon-512.png`, `apple-touch-icon.png`.
 
 ## 1. Host it on GitHub Pages (free, ~5 min, phone or laptop)
 GitHub Pages needs a **public** repo on a free account. The code has no secrets — data never touches the repo.
@@ -28,6 +28,11 @@ Notes: the Microsoft session may need a re-login every few months — the app sh
 
 ## Restore on a new phone
 Install the app (step 2) → الإعدادات → النسخ الاحتياطي → **استرجاع من ملف** → pick a backup from Files (iCloud/OneDrive).
+
+## What's in v3 (Sep 5)
+Inventory: ingredients & packaging with units, low-stock alerts on Today, "+ شراء" restock (price → unit cost, booked as purchase), "انتهى" calibration (real avg per order), manual adjust, recipes per item/size (bundles reference other items), per-order consumables, auto-deduction when an order is Delivered (reversed on revert/edit/delete), prep sheet (items + ingredients needed for open orders).
+Finance: period filter (today/week/month/last month/all), revenue → − ingredients (COGS from recipes) − delivery (per-order cost + subscriptions) − other expenses = net profit; collected vs outstanding; by delivery method (charged vs paid); per-item margin; expenses list; monthly recurring subscriptions (e.g. Mrsool) auto-booked.
+UX: photo cropper (drag/pinch/slider), live auto-save in Settings (no Save buttons), tab bar always visible, Back goes to the parent screen, Mrsool with logo + preset photos for delivery methods, "delete all orders" reset in Backup.
 
 ## What's in v2 (visual redesign)
 Kiosk-style order wizard (photo tiles, round add-on tiles, big delivery/payment tiles, recent-customers one-tap fill, receipt review) · Today as action cards with the next step on each · order detail with tappable status stops · photos for menu items and delivery methods from the camera roll · icons throughout.

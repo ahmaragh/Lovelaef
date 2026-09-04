@@ -23,7 +23,7 @@ const SEED = {
   ],
   methods: [
     { name: 'توصيلي', kind: 'self_her' }, { name: 'زوجي الغالي وصّلها', kind: 'self_husband' },
-    { name: 'مندوب', kind: 'driver' }, { name: 'بارسل', kind: 'courier' }, { name: 'استلام', kind: 'pickup' },
+    { name: 'مندوب', kind: 'driver' }, { name: 'مرسول', kind: 'courier' }, { name: 'استلام', kind: 'pickup' },
   ],
   messages: [
     { trigger: 'delivered', text: 'طلب آخر وصل بسلام. فخور بك… وبكل رول لفّيتيه.' },
@@ -50,10 +50,11 @@ function freshState() {
     schema: SCHEMA, businessName: 'ورقة حُب', nextOrderNumber: 1,
     menu: SEED.menu.map((m, i) => ({ id: uid(), active: true, sort: i, pieces: null, leadTimeDays: 0, isBundle: false, variants: [], ...m })),
     addons: SEED.addons.map((a, i) => ({ id: uid(), active: true, sort: i, ...a })),
-    methods: SEED.methods.map((m, i) => ({ id: uid(), active: true, sort: i, ...m })),
+    methods: SEED.methods.map((m, i) => ({ id: uid(), active: true, sort: i, photo: (typeof PRESET_PHOTOS !== 'undefined' && PRESET_PHOTOS[m.kind]) || '', ...m })),
     messages: SEED.messages.map((m) => ({ id: uid(), active: true, threshold: null, ...m })),
     orders: [],
     settings: { onedrive: { clientId: '', connected: false, account: '', lastBackup: '' }, wizardOrder: 'items' },
+    ingredients: [], recipes: [], perOrder: [], moves: [], expenses: [], recurring: [],
   };
 }
 
@@ -61,7 +62,9 @@ function load() {
   try { const raw = localStorage.getItem(KEY); if (raw) { S = JSON.parse(raw); migrate(); return; } } catch (e) { console.error(e); }
   S = freshState(); persist(false);
 }
-function migrate() { if (!S.settings) S.settings = {}; if (!S.settings.onedrive) S.settings.onedrive = { clientId: '', connected: false, account: '', lastBackup: '' }; S.menu.forEach((m) => { if (!('photo' in m)) m.photo = ''; }); S.methods.forEach((m) => { if (!('photo' in m)) m.photo = ''; }); if (!S.settings.wizardOrder) S.settings.wizardOrder = 'items'; }
+function migrate() { if (!S.settings) S.settings = {}; if (!S.settings.onedrive) S.settings.onedrive = { clientId: '', connected: false, account: '', lastBackup: '' }; S.menu.forEach((m) => { if (!('photo' in m)) m.photo = ''; });
+  S.methods.forEach((m) => { if (!('photo' in m)) m.photo = ''; if (m.name === 'بارسل') m.name = 'مرسول'; if (!m.photo && typeof PRESET_PHOTOS !== 'undefined' && PRESET_PHOTOS[m.kind] && (m.kind !== 'courier' || m.name === 'مرسول')) m.photo = PRESET_PHOTOS[m.kind]; });
+  ['ingredients', 'recipes', 'perOrder', 'moves', 'expenses', 'recurring'].forEach((k) => { if (!Array.isArray(S[k])) S[k] = []; }); }
 let backupTimer = null;
 function persist(triggerBackup = true) {
   localStorage.setItem(KEY, JSON.stringify(S));
@@ -141,14 +144,36 @@ const ico = (n, cls = '') => `<svg class="ico ${cls}" viewBox="0 0 24 24">${I[n]
 const CAT_ICON = (cat) => /كيك/.test(cat) ? 'cake' : /بوكس/.test(cat) ? 'bigbox' : /صوص|إضاف/.test(cat) ? 'sauce' : 'roll';
 const KIND_ICON = { self_her: 'her', self_husband: 'husband', driver: 'driver', courier: 'courier', pickup: 'pickup' };
 
-// Photos: shrink to a small square JPEG so a full menu stays well under 1 MB.
+// Photos: pick → crop (drag / pinch / slider) → 360px square JPEG.
 function pickPhoto(cb) {
   const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*';
-  inp.onchange = () => { const f = inp.files[0]; if (!f) return; const img = new Image(); img.onload = () => {
-    const S_ = 360, c = document.createElement('canvas'); c.width = c.height = S_; const x = c.getContext('2d');
-    const r = Math.max(S_ / img.width, S_ / img.height), w = img.width * r, h = img.height * r; x.drawImage(img, (S_ - w) / 2, (S_ - h) / 2, w, h);
-    cb(c.toDataURL('image/jpeg', 0.72)); URL.revokeObjectURL(img.src); }; img.src = URL.createObjectURL(f); };
+  inp.onchange = () => { const f = inp.files[0]; if (!f) return; const img = new Image(); img.onload = () => { URL.revokeObjectURL(img.src); cropSheet(img, cb); }; img.src = URL.createObjectURL(f); };
   inp.click();
+}
+function cropSheet(img, cb) {
+  const V = Math.min(320, window.innerWidth - 48);
+  sheet(`<h2>قصّ الصورة</h2><p class="small muted">حرّكي الصورة بإصبعك، وكبّري بإصبعين أو بالشريط.</p>
+    <canvas id="crop" width="${V}" height="${V}" style="display:block;margin:0 auto;border-radius:18px;border:1.5px solid var(--gold-dim);touch-action:none;background:#000"></canvas>
+    <input type="range" id="zoom" min="1" max="4" step="0.01" value="1" style="width:100%;margin:14px 0;accent-color:var(--gold)">
+    <button class="btn" id="cropOk">استخدام الصورة</button>`, () => {
+    const cv = $('#crop'), cx = cv.getContext('2d'); const base = Math.max(V / img.width, V / img.height);
+    let z = 1, ox = 0, oy = 0; // zoom factor and pan (in canvas px)
+    const clamp = () => { const w = img.width * base * z, h = img.height * base * z; ox = Math.min(0, Math.max(V - w, ox)); oy = Math.min(0, Math.max(V - h, oy)); };
+    const draw = () => { clamp(); cx.fillStyle = '#000'; cx.fillRect(0, 0, V, V); cx.drawImage(img, ox, oy, img.width * base * z, img.height * base * z); };
+    ox = (V - img.width * base) / 2; oy = (V - img.height * base) / 2; draw();
+    let last = null, pinch = null;
+    const pts = (e) => e.touches ? [...e.touches].map((t) => ({ x: t.clientX, y: t.clientY })) : [{ x: e.clientX, y: e.clientY }];
+    const zoomAt = (nz, px, py) => { nz = Math.max(1, Math.min(4, nz)); const k = nz / z; ox = px - (px - ox) * k; oy = py - (py - oy) * k; z = nz; $('#zoom').value = z; draw(); };
+    const down = (e) => { e.preventDefault(); const p = pts(e); if (p.length === 2) pinch = { d: Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y), z }; else last = p[0]; };
+    const move = (e) => { e.preventDefault(); const p = pts(e); const r = cv.getBoundingClientRect();
+      if (p.length === 2 && pinch) { const d = Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y); zoomAt(pinch.z * d / pinch.d, (p[0].x + p[1].x) / 2 - r.left, (p[0].y + p[1].y) / 2 - r.top); return; }
+      if (last && p[0]) { ox += p[0].x - last.x; oy += p[0].y - last.y; last = p[0]; draw(); } };
+    const up = () => { last = null; pinch = null; };
+    cv.addEventListener('touchstart', down, { passive: false }); cv.addEventListener('touchmove', move, { passive: false }); cv.addEventListener('touchend', up);
+    cv.addEventListener('mousedown', down); window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+    $('#zoom').oninput = (e) => zoomAt(+e.target.value, V / 2, V / 2);
+    $('#cropOk').onclick = () => { const out = document.createElement('canvas'); out.width = out.height = 360; const k = 360 / V; out.getContext('2d').drawImage(img, ox * k, oy * k, img.width * base * z * k, img.height * base * z * k); closeSheet(); cb(out.toDataURL('image/jpeg', 0.72)); };
+  });
 }
 const initials = (n) => (n || '?').trim().charAt(0);
 function recentCustomers(limit = 12) {
@@ -166,13 +191,16 @@ const $ = (sel, el = document) => el.querySelector(sel);
 const app = $('#app'), hdr = $('#hdr'), tabsEl = $('#tabs'), overlay = $('#overlay');
 const TABS = [['today', 'اليوم', 'home'], ['orders', 'الطلبات', 'list'], ['inventory', 'المخزون', 'box'], ['finance', 'المالية', 'chart'], ['settings', 'الإعدادات', 'gear']];
 const go = (h) => { location.hash = h; };
-const back = () => { if (history.length > 1) history.back(); else go('#/today'); };
 
-function chrome(title, { backBtn = false, tab = null } = {}) {
+
+function chrome(title, { backBtn = false, tab = null, parent = null } = {}) {
+  const h = location.hash.replace(/^#\/?/, '').split('/')[0];
+  tab = tab || ({ order: 'orders', settings: 'settings', inventory: 'inventory', finance: 'finance' }[h] || 'today');
+  const up = parent || ({ order: '#/orders', settings: '#/settings', inventory: '#/inventory', finance: '#/finance' }[h] || '#/today');
   hdr.innerHTML = `${backBtn ? `<button class="back" id="backBtn" style="font-size:15px;font-weight:600">رجوع</button>` : '<span class="spacer"></span>'}<h1>${esc(title)}</h1><span class="spacer"></span>`;
-  if (backBtn) $('#backBtn').onclick = back;
-  tabsEl.style.display = tab ? 'flex' : 'none';
-  if (tab) tabsEl.innerHTML = TABS.map(([k, l, g]) => `<a href="#/${k}" class="${tab === k ? 'on' : ''}">${ico(g)}${l}</a>`).join('');
+  if (backBtn) $('#backBtn').onclick = () => go(up);
+  tabsEl.style.display = 'flex';
+  tabsEl.innerHTML = TABS.map(([k, l, g]) => `<a href="#/${k}" class="${tab === k ? 'on' : ''}">${ico(g)}${l}</a>`).join('');
   window.scrollTo(0, 0);
 }
 
@@ -185,8 +213,15 @@ function route() {
   if (p[0] === 'order' && p[1] === 'new') return Screens.orderForm(null);
   if (p[0] === 'order' && p[2] === 'edit') return Screens.orderForm(p[1]);
   if (p[0] === 'order') return Screens.orderDetail(p[1]);
-  if (p[0] === 'inventory') return Screens.placeholder('المخزون', 'يأتي في التحديث القادم: المكونات، التغليف، تنبيه النقص، وورقة التحضير اليومية.', 'inventory');
-  if (p[0] === 'finance') return Screens.placeholder('المالية', 'يأتي في التحديث القادم: الإيراد، التكاليف، التوصيل، والربح لكل صنف.', 'finance');
+  if (p[0] === 'inventory' && p[1] === 'prep') return Screens.prep();
+  if (p[0] === 'inventory' && p[1] === 'recipes' && p[2]) return Screens.recipe(decodeURIComponent(p[2]));
+  if (p[0] === 'inventory' && p[1] === 'recipes') return Screens.recipes();
+  if (p[0] === 'inventory' && p[1] === 'perorder') return Screens.perOrder();
+  if (p[0] === 'inventory' && p[1]) return Screens.ingredient(p[1]);
+  if (p[0] === 'inventory') return Screens.inventory();
+  if (p[0] === 'finance' && p[1] === 'expenses') return Screens.expenses();
+  if (p[0] === 'finance' && p[1] === 'recurring') return Screens.recurring();
+  if (p[0] === 'finance') return Screens.finance();
   if (p[0] === 'settings' && p[1] === 'menu' && p[2]) return Screens.menuItem(p[2]);
   if (p[0] === 'settings' && p[1] === 'menu') return Screens.menu();
   if (p[0] === 'settings' && p[1] === 'addons') return Screens.addons();
@@ -256,7 +291,7 @@ function pickDeliveredMessage(kind) {
   const ev = ms.filter((m) => m.trigger === 'delivered'); return ev.length ? ev[total % ev.length].text : null;
 }
 function logChange(o, change) { (o.log = o.log || []).unshift({ at: nowISO(), change }); o.updatedAt = nowISO(); }
-function setStatus(o, s, cost) { o.status = s; if (s === 'delivered') { o.deliveredAt = nowISO(); o.deliveryCost = cost == null ? null : cost; } else o.deliveredAt = null; logChange(o, `الحالة: ${statusLabel(s)}`); persist(); }
+function setStatus(o, s, cost) { o.status = s; if (s === 'delivered') { o.deliveredAt = nowISO(); o.deliveryCost = cost == null ? null : cost; applyStock(o); } else { o.deliveredAt = null; revertStock(o); } logChange(o, `الحالة: ${statusLabel(s)}`); persist(); }
 function showLove(msg) { sheet(`<div class="love"><div class="heart">❤</div><p>${esc(msg)}</p><div class="small muted">— زوجك</div><div style="height:14px"></div><button class="btn goldline" id="loveOk">يلا نكمل</button></div>`, () => { $('#loveOk').onclick = closeSheet; }); }
 
 // ---------- Today ----------
@@ -274,11 +309,12 @@ Screens.today = () => {
   app.innerHTML = `<div class="stack pad-sticky tabbed" style="gap:14px">
     <div class="small muted">${fmtDay(nowISO())}</div>
     ${od.connected && od.needsLogin ? `<div class="banner err">انتهت جلسة OneDrive. <a href="#/settings/backup">أعيدي تسجيل الدخول</a> ليستمر النسخ التلقائي.</div>` : ''}
+    ${lowStock().length ? `<a class="banner err" href="#/inventory" style="display:block;text-decoration:none;color:var(--text)">${ico('box')} المخزون منخفض: ${lowStock().map((i) => esc(i.name)).join('، ')}</a>` : ''}
     <div class="row"><div class="stat"><span class="num gold">${openToday.length}</span><span class="small muted">مفتوحة اليوم</span></div>
       <div class="stat"><span class="num gold">${doneToday.length}</span><span class="small muted">وصلت اليوم</span></div>
       <div class="stat"><span class="num ${unpaid.length ? 'red' : 'gold'}">${unpaid.length ? money(unpaidAmt) : '—'}</span><span class="small muted">غير مدفوع</span></div></div>
     ${lateOthers.length ? `<div class="section" style="padding-top:4px"><h2 class="red">متأخرة</h2><span class="muted">${lateOthers.length}</span></div>${lateOthers.map((o) => orderCard(o, { showDay: true })).join('')}` : ''}
-    <div class="section" style="padding-top:4px"><h2>اليوم</h2><span class="muted">${openToday.length}</span></div>
+    <div class="section" style="padding-top:4px"><h2>اليوم</h2><span class="row" style="gap:10px">${openToday.length ? `<a href="#/inventory/prep" class="small">${ico('bowl')} ورقة التحضير</a>` : ''}<span class="muted">${openToday.length}</span></span></div>
     ${openToday.length ? openToday.map((o) => orderCard(o)).join('') : `<div class="empty" style="padding:20px"><div style="font-size:40px">🍣</div><div class="muted">لا يوجد طلبات مفتوحة لليوم.</div></div>`}
     ${upcoming.length ? `<div class="section"><h2>القادم</h2><span class="muted">${upcoming.length}</span></div>${upcoming.map((o) => orderCard(o, { showDay: true })).join('')}` : ''}
     ${doneToday.length ? `<div class="section"><h2>تم توصيلها اليوم</h2><span class="gold strong">${money(revenue)}</span></div>${doneToday.map((o) => `<a class="orow" href="#/order/${o.id}"><span class="seal sm">#${pad3(o.number)}</span><div class="grow"><div class="row between"><span class="strong">${esc(o.customerName) || 'بدون اسم'}</span><span class="gold">${money(o.total)}</span></div><div class="small muted ellip">${esc(itemsSummary(o))}</div></div></a>`).join('')}` : ''}
@@ -336,14 +372,14 @@ Screens.orderForm = (editId) => {
 
   const render = () => {
     const [sid, title, sub] = STEPS[WIZ.step];
-    chrome(existing ? `تعديل #${pad3(existing.number)}` : 'طلب جديد', { backBtn: true });
+    chrome(existing ? `تعديل #${pad3(existing.number)}` : 'طلب جديد', { backBtn: true, parent: existing ? `#/order/${existing.id}` : '#/today' });
     const { total } = totals(D);
     const canNext = sid === 'items' ? itemCount() > 0 : sid === 'delivery' ? !!D.deliveryMethodId : true;
-    app.innerHTML = `<div class="pad-sticky">
+    app.innerHTML = `<div class="pad-sticky tabbed">
       <div class="dots">${STEPS.map((s, i) => `<span class="${i < WIZ.step ? 'done' : i === WIZ.step ? 'on' : ''}" data-step="${i}"></span>`).join('')}</div>
       <div class="steptitle"><h2>${title}</h2><div class="muted">${sub}</div></div>
       <div id="stepBody"></div></div>
-      <div class="sticky"><div class="row between" style="margin-bottom:8px"><span class="muted small" id="sumLine">${itemCount()} صنف${D.deliveryCharge ? ` · توصيل ${D.deliveryCharge}` : ''}</span><span class="num gold" id="sumTotal">${money(total)}</span></div>
+      <div class="sticky above-tabs"><div class="row between" style="margin-bottom:8px"><span class="muted small" id="sumLine">${itemCount()} صنف${D.deliveryCharge ? ` · توصيل ${D.deliveryCharge}` : ''}</span><span class="num gold" id="sumTotal">${money(total)}</span></div>
         <div class="wizbar">${WIZ.step > 0 ? `<button class="btn ghost" id="prev">السابق</button>` : ''}<button class="btn" id="next" ${canNext ? '' : 'disabled'}>${sid === 'review' ? (existing ? 'حفظ التعديلات' : 'حفظ الطلب') : 'التالي'}</button></div></div>`;
     app.querySelectorAll('[data-step]').forEach((d) => (d.onclick = () => { if (+d.dataset.step <= WIZ.step || itemCount() > 0) { WIZ.step = +d.dataset.step; render(); } }));
     if ($('#prev')) $('#prev').onclick = () => { WIZ.step--; render(); };
@@ -471,11 +507,12 @@ Screens.orderForm = (editId) => {
 
   const save = () => {
     const { itemsTotal, total } = totals(D); const t = nowISO();
+    if (existing && existing.status === 'delivered') revertStock(existing);
     const o = Object.assign(existing || { id: uid(), number: S.nextOrderNumber, status: 'new', createdAt: t, deliveredAt: null, deliveryCost: null, log: [] }, {
       customerName: D.customerName.trim(), customerPhone: D.customerPhone.trim(), fulfilment: D.fulfilment, deliveryMethodId: D.deliveryMethodId, address: D.address.trim(), mapsUrl: D.mapsUrl.trim(), dueAt: D.dueAt, notes: D.notes.trim(),
       lines: D.lines.filter((l) => l.qty > 0), deliveryCharge: +D.deliveryCharge || 0, discount: +D.discount || 0, itemsTotal, total, paymentStatus: D.paymentStatus,
       paymentMethod: D.paymentStatus === 'unpaid' ? null : D.paymentMethod, paidAmount: D.paymentStatus === 'paid' ? total : D.paymentStatus === 'unpaid' ? 0 : Math.min(total, +D.paidAmount || 0), updatedAt: t });
-    if (!existing) { S.nextOrderNumber++; S.orders.push(o); o.log.unshift({ at: t, change: 'أُنشئ الطلب' }); } else o.log.unshift({ at: t, change: 'عُدّل الطلب' });
+    if (!existing) { S.nextOrderNumber++; S.orders.push(o); o.log.unshift({ at: t, change: 'أُنشئ الطلب' }); } else { o.log.unshift({ at: t, change: 'عُدّل الطلب' }); if (o.status === 'delivered') applyStock(o); }
     WIZ.key = null; persist(); location.replace(`#/order/${o.id}`);
   };
   render();
@@ -529,7 +566,7 @@ Screens.orderDetail = (id) => {
       $('#payOk').onclick = () => { const amt = Math.min(o.total, o.paidAmount + (+$('#amt').value || 0)); o.paidAmount = amt; o.paymentMethod = pm; o.paymentStatus = amt >= o.total ? 'paid' : amt > 0 ? 'partial' : 'unpaid'; logChange(o, `الدفع: ${payLabel(o.paymentStatus)}`); persist(); closeSheet(); again(); }; });
   if ($('#payFull')) $('#payFull').onclick = () => paySheet(remaining);
   if ($('#payPart')) $('#payPart').onclick = () => paySheet('');
-  $('#del').onclick = () => { if (confirm(`حذف الطلب #${pad3(o.number)} نهائياً؟`)) { S.orders = S.orders.filter((x) => x.id !== o.id); persist(); go('#/orders'); } };
+  $('#del').onclick = () => { if (confirm(`حذف الطلب #${pad3(o.number)} نهائياً؟`)) { revertStock(o); S.orders = S.orders.filter((x) => x.id !== o.id); persist(); go('#/orders'); } };
 };
 
 // ---------- Settings ----------
@@ -540,56 +577,63 @@ Screens.settings = () => {
   const items = [['menu', 'roll', 'المنيو والأسعار', 'الأصناف، الصور، الأحجام، الأسعار'], ['addons', 'sauce', 'الإضافات', 'الصوصات والإضافات وأسعارها'], ['delivery', 'driver', 'طرق التوصيل', 'توصيلي، مندوب، بارسل… مع الصور'], ['messages', 'msg', 'رسائل', 'رسائل تظهر بعد كل توصيلة'],
     ['backup', 'cloud', 'النسخ الاحتياطي', od.connected ? `OneDrive متصل${od.lastBackup ? ' · آخر نسخة ' + fmtShort(od.lastBackup) + ' ' + fmtTime(od.lastBackup) : ''}` : 'تصدير واسترجاع، وربط OneDrive']];
   app.innerHTML = items.map(([k, ic, t, b]) => `<a class="srow" href="#/settings/${k}"><span class="ic">${ico(ic)}</span><div class="grow"><div class="strong">${t}</div><div class="small muted">${b}</div></div><span class="muted">‹</span></a>`).join('') +
-    `<div class="small faint" style="padding-top:24px">ورقة حُب · نسخة الويب 2 · البيانات محفوظة على هذا الجهاز فقط.</div>`;
+    `<div class="small faint" style="padding-top:24px">ورقة حُب · نسخة الويب 3 · البيانات محفوظة على هذا الجهاز فقط.</div>`;
 };
 
 Screens.menu = () => {
   chrome('المنيو والأسعار', { backBtn: true });
   const cats = [...new Set(S.menu.map((m) => m.category))];
-  app.innerHTML = `<div class="pad-sticky">${cats.map((cat) => `<h3 style="margin-top:12px">${esc(cat)}</h3>${S.menu.filter((m) => m.category === cat).map((m) => `
+  app.innerHTML = `<div class="pad-sticky tabbed">${cats.map((cat) => `<h3 style="margin-top:12px">${esc(cat)}</h3>${S.menu.filter((m) => m.category === cat).map((m) => `
     <div class="item"><a class="row grow" href="#/settings/menu/${m.id}" style="text-decoration:none;color:inherit"><span style="width:52px;height:52px;border-radius:12px;background:var(--raised);overflow:hidden;display:flex;align-items:center;justify-content:center;color:var(--gold-dim);flex-shrink:0">${m.photo ? `<img src="${m.photo}" style="width:100%;height:100%;object-fit:cover">` : ico(CAT_ICON(m.category))}</span>
       <div class="grow"><div class="strong ${m.active ? '' : 'muted'}">${esc(m.name)}</div><div class="small muted">${m.variants && m.variants.length ? m.variants.map((v) => `${esc(v.name)} ${v.price}`).join(' · ') : money(m.price)}${m.pieces ? ` · ${m.pieces} قطع` : ''}${m.leadTimeDays ? ` · قبل ${m.leadTimeDays} يوم` : ''}</div></div></a>${switchBtn(m.active, `data-t="${m.id}"`)}</div>`).join('')}`).join('')}</div>
-    <div class="sticky"><a class="btn" href="#/settings/menu/new">${ico('plus')} صنف جديد</a></div>`;
+    <div class="sticky above-tabs"><a class="btn" href="#/settings/menu/new">${ico('plus')} صنف جديد</a></div>`;
   app.querySelectorAll('[data-t]').forEach((b) => (b.onclick = () => { const m = S.menu.find((x) => x.id === b.dataset.t); m.active = !m.active; persist(); Screens.menu(); }));
 };
 
 Screens.menuItem = (id) => {
-  const ex = id === 'new' ? null : S.menu.find((m) => m.id === id);
+  let ex = id === 'new' ? null : S.menu.find((m) => m.id === id);
   if (id !== 'new' && !ex) { go('#/settings/menu'); return; }
-  chrome(ex ? ex.name : 'صنف جديد', { backBtn: true });
+  chrome(ex ? ex.name : 'صنف جديد', { backBtn: true, parent: '#/settings/menu' });
   const cats = [...new Set(S.menu.map((m) => m.category))];
-  const W = { name: ex ? ex.name : '', cat: ex ? ex.category : cats[0] || 'رولات', newCat: '', price: ex ? ex.price : '', pieces: ex && ex.pieces ? ex.pieces : '', lead: ex && ex.leadTimeDays ? ex.leadTimeDays : '', bundle: ex ? !!ex.isBundle : false, photo: ex ? ex.photo || '' : '', variants: ex ? ex.variants.map((v) => ({ ...v })) : [] };
+  const W = ex ? { ...ex, variants: ex.variants.map((v) => ({ ...v })), newCat: '' } : { name: '', category: cats[0] || 'رولات', newCat: '', price: 0, pieces: null, leadTimeDays: 0, isBundle: false, photo: '', variants: [] };
+  let t;
+  const commit = () => { // live save — no Save button
+    if (!ex) { if (!W.name.trim() && !W.photo) return; ex = { id: uid(), active: true, sort: S.menu.length }; S.menu.push(ex); history.replaceState(null, '', `#/settings/menu/${ex.id}`); }
+    const vs = W.variants.filter((v) => v.name.trim()).map((v) => ({ name: v.name.trim(), price: +v.price || 0 }));
+    Object.assign(ex, { name: W.name.trim() || ex.name || 'صنف', category: W.newCat.trim() || W.category, price: vs.length ? vs[0].price : +W.price || 0, pieces: +W.pieces || null, leadTimeDays: +W.leadTimeDays || 0, isBundle: !!W.isBundle, variants: vs, photo: W.photo });
+    persist(); $('#savedNote').textContent = 'تم الحفظ ✓'; setTimeout(() => { const n = $('#savedNote'); if (n) n.textContent = ''; }, 1500);
+  };
+  const later = () => { clearTimeout(t); t = setTimeout(commit, 500); };
   const render = () => {
     app.innerHTML = `<div class="stack" style="gap:16px">
-      <div class="row" style="gap:16px"><div class="photo-pick" id="ph">${W.photo ? `<img src="${W.photo}">` : ico('camera')}</div><div class="grow"><div class="strong">صورة الصنف</div><div class="small muted">من الكاميرا أو الاستوديو. تظهر في شبكة الطلب.</div>${W.photo ? `<button class="btn ghost sm" id="phX" style="margin-top:6px">إزالة الصورة</button>` : ''}</div></div>
+      <div class="row" style="gap:16px"><div class="photo-pick" id="ph">${W.photo ? `<img src="${W.photo}">` : ico('camera')}</div><div class="grow"><div class="strong">صورة الصنف</div><div class="small muted">من الكاميرا أو الاستوديو، مع قصّ. تظهر في شبكة الطلب.</div>${W.photo ? `<button class="btn ghost sm" id="phX" style="margin-top:6px">إزالة الصورة</button>` : ''}</div></div>
       <label class="f"><span>الاسم</span><input class="in big" id="mName" value="${esc(W.name)}" placeholder="مثال: دراغون رول"></label>
-      <div><span class="small strong muted">الفئة</span><div class="chips" style="margin:6px 0" id="cats">${cats.map((c) => `<button class="chip ${!W.newCat && W.cat === c ? 'on' : ''}" data-c="${esc(c)}">${esc(c)}</button>`).join('')}</div><input class="in" id="mNewCat" value="${esc(W.newCat)}" placeholder="أو فئة جديدة…"></div>
-      ${W.variants.length ? '' : `<label class="f"><span>السعر</span><input class="in big" id="mPrice" type="number" inputmode="decimal" value="${W.price}" placeholder="22"></label>`}
-      <div class="row"><label class="f grow"><span>عدد القطع</span><input class="in" id="mPieces" type="number" inputmode="numeric" value="${W.pieces}" placeholder="7"></label>
-        <label class="f grow"><span>يحتاج تحضير (أيام)</span><input class="in" id="mLead" type="number" inputmode="numeric" value="${W.lead}" placeholder="0"></label></div>
-      <div class="row between"><div><div>بوكس / عرض مجمّع</div><div class="small muted">يتكوّن من أصناف أخرى</div></div>${switchBtn(W.bundle, 'id="mBundle"')}</div>
+      <div><span class="small strong muted">الفئة</span><div class="chips" style="margin:6px 0">${cats.map((c) => `<button class="chip ${!W.newCat && W.category === c ? 'on' : ''}" data-c="${esc(c)}">${esc(c)}</button>`).join('')}</div><input class="in" id="mNewCat" value="${esc(W.newCat)}" placeholder="أو فئة جديدة…"></div>
+      ${W.variants.length ? '' : `<label class="f"><span>السعر</span><input class="in big" id="mPrice" type="number" inputmode="decimal" value="${W.price || ''}" placeholder="22"></label>`}
+      <div class="row"><label class="f grow"><span>عدد القطع</span><input class="in" id="mPieces" type="number" inputmode="numeric" value="${W.pieces || ''}" placeholder="7"></label>
+        <label class="f grow"><span>يحتاج تحضير (أيام)</span><input class="in" id="mLead" type="number" inputmode="numeric" value="${W.leadTimeDays || ''}" placeholder="0"></label></div>
+      <div class="row between"><div><div>بوكس / عرض مجمّع</div><div class="small muted">يتكوّن من أصناف أخرى — تُحدد في المخزون ← الوصفات</div></div>${switchBtn(W.isBundle, 'id="mBundle"')}</div>
       <div><div class="row between"><span class="small strong muted">الأحجام (اختياري)</span><button class="btn ghost sm" id="addV">+ حجم</button></div>
-        <div class="stack" id="vars" style="margin-top:8px">${W.variants.map((v, i) => `<div class="row"><input class="in grow" data-vn="${i}" value="${esc(v.name)}" placeholder="وسط" style="flex:2"><input class="in" data-vp="${i}" type="number" inputmode="decimal" value="${v.price}" placeholder="49" style="flex:1"><button class="btn ghost sm" data-vx="${i}">×</button></div>`).join('')}</div></div>
-      <button class="btn" id="mSave">حفظ</button>${ex ? `<button class="btn danger" id="mDel">حذف الصنف</button>` : ''}
+        <div class="stack" style="margin-top:8px">${W.variants.map((v, i) => `<div class="row"><input class="in grow" data-vn="${i}" value="${esc(v.name)}" placeholder="وسط" style="flex:2"><input class="in" data-vp="${i}" type="number" inputmode="decimal" value="${v.price || ''}" placeholder="49" style="flex:1"><button class="btn ghost sm" data-vx="${i}">×</button></div>`).join('')}</div></div>
+      ${ex ? `<a class="btn goldline" href="#/inventory/recipes/${encodeURIComponent(ex.id)}">${ico('bowl')} الوصفة والمكونات</a><button class="btn danger" id="mDel">حذف الصنف</button>` : ''}
+      <div class="small ok center" id="savedNote"></div>
     </div>`;
-    const sync = () => { W.name = $('#mName').value; W.newCat = $('#mNewCat').value; if ($('#mPrice')) W.price = $('#mPrice').value; W.pieces = $('#mPieces').value; W.lead = $('#mLead').value; W.bundle = $('#mBundle').classList.contains('on'); app.querySelectorAll('[data-vn]').forEach((i) => (W.variants[+i.dataset.vn].name = i.value)); app.querySelectorAll('[data-vp]').forEach((i) => (W.variants[+i.dataset.vp].price = +i.value || 0)); };
-    $('#ph').onclick = () => pickPhoto((d) => { sync(); W.photo = d; render(); });
-    if ($('#phX')) $('#phX').onclick = () => { sync(); W.photo = ''; render(); };
-    app.querySelectorAll('[data-c]').forEach((b) => (b.onclick = () => { sync(); W.cat = b.dataset.c; W.newCat = ''; render(); }));
-    $('#mBundle').onclick = (e) => e.target.classList.toggle('on');
-    $('#addV').onclick = () => { sync(); W.variants.push({ name: '', price: 0 }); render(); };
-    app.querySelectorAll('[data-vx]').forEach((b) => (b.onclick = () => { sync(); W.variants.splice(+b.dataset.vx, 1); render(); }));
-    $('#mSave').onclick = () => {
-      sync(); const name = W.name.trim(); if (!name) return toast('اكتبي اسم الصنف');
-      const vs = W.variants.filter((v) => v.name.trim()).map((v) => ({ name: v.name.trim(), price: +v.price || 0 }));
-      const data = { name, category: W.newCat.trim() || W.cat, price: vs.length ? vs[0].price : +W.price || 0, pieces: +W.pieces || null, leadTimeDays: +W.lead || 0, isBundle: W.bundle, variants: vs, photo: W.photo };
-      if (ex) Object.assign(ex, data); else S.menu.push({ id: uid(), active: true, sort: S.menu.length, ...data });
-      persist(); go('#/settings/menu');
-    };
+    $('#ph').onclick = () => pickPhoto((d) => { W.photo = d; commit(); render(); });
+    if ($('#phX')) $('#phX').onclick = () => { W.photo = ''; commit(); render(); };
+    app.querySelectorAll('[data-c]').forEach((b) => (b.onclick = () => { W.category = b.dataset.c; W.newCat = ''; commit(); render(); }));
+    $('#mName').oninput = (e) => { W.name = e.target.value; later(); }; $('#mNewCat').oninput = (e) => { W.newCat = e.target.value; later(); };
+    if ($('#mPrice')) $('#mPrice').oninput = (e) => { W.price = e.target.value; later(); };
+    $('#mPieces').oninput = (e) => { W.pieces = e.target.value; later(); }; $('#mLead').oninput = (e) => { W.leadTimeDays = e.target.value; later(); };
+    $('#mBundle').onclick = (e) => { e.target.classList.toggle('on'); W.isBundle = e.target.classList.contains('on'); commit(); };
+    $('#addV').onclick = () => { W.variants.push({ name: '', price: 0 }); render(); };
+    app.querySelectorAll('[data-vn]').forEach((i) => (i.oninput = () => { W.variants[+i.dataset.vn].name = i.value; later(); }));
+    app.querySelectorAll('[data-vp]').forEach((i) => (i.oninput = () => { W.variants[+i.dataset.vp].price = +i.value || 0; later(); }));
+    app.querySelectorAll('[data-vx]').forEach((b) => (b.onclick = () => { W.variants.splice(+b.dataset.vx, 1); commit(); render(); }));
     if (ex) $('#mDel').onclick = () => { if (confirm('حذف الصنف؟ الطلبات القديمة تحتفظ باسمه وسعره.')) { S.menu = S.menu.filter((m) => m.id !== ex.id); persist(); go('#/settings/menu'); } };
   };
   render();
 };
+
 Screens.addons = () => {
   chrome('الإضافات', { backBtn: true });
   app.innerHTML = `<div class="stack">${S.addons.map((a) => `<div class="row between"><div><div>${esc(a.name)}</div><div class="small muted">${a.price ? money(a.price) : 'مجاناً'}</div></div><button class="btn ghost sm" data-x="${a.id}">حذف</button></div>`).join('')}
@@ -704,7 +748,8 @@ Screens.backup = () => {
   app.innerHTML = `<div class="stack" style="gap:20px">
     <div class="card stack" style="gap:8px"><h2>نسخة يدوية</h2><div class="small muted">ملف واحد فيه كل شيء: الطلبات، المنيو، الأسعار، الإعدادات. احفظيه في iCloud Drive أو OneDrive من قائمة المشاركة.</div>
       <button class="btn goldline" id="exp">حفظ نسخة الآن</button>
-      <label class="btn ghost" style="cursor:pointer">استرجاع من ملف<input type="file" id="imp" accept="application/json,.json" style="display:none"></label></div>
+      <label class="btn ghost" style="cursor:pointer">استرجاع من ملف<input type="file" id="imp" accept="application/json,.json" style="display:none"></label>
+      <button class="btn danger" id="wipeOrders">حذف كل الطلبات (بداية جديدة)</button></div>
     <div class="card stack" style="gap:8px"><h2>OneDrive تلقائي</h2>
       ${c.connected ? `<div class="small ${c.needsLogin ? 'red' : 'ok'}">${c.needsLogin ? 'انتهت الجلسة — تسجيل دخول مطلوب' : 'متصل'} · ${esc(c.account)}</div>
         <div class="small muted">${c.lastBackup ? 'آخر نسخة: ' + fmtDay(c.lastBackup) + ' ' + fmtTime(c.lastBackup) : 'لم تُرفع نسخة بعد'} · تُرفع نسخة تلقائياً بعد كل تغيير إلى مجلد Apps/ورقة حُب.</div>
@@ -717,6 +762,7 @@ Screens.backup = () => {
     <div class="small faint">عنوان إعادة التوجيه لتسجيل التطبيق: <span style="direction:ltr;display:inline-block">${esc(OneDrive.redirect())}</span></div>
   </div>`;
   $('#exp').onclick = exportFile;
+  $('#wipeOrders').onclick = () => { if (confirm('حذف جميع الطلبات وحركات المخزون المرتبطة بها؟ المنيو والإعدادات تبقى. لا يمكن التراجع.')) { S.orders.forEach(revertStock); S.orders = []; S.nextOrderNumber = 1; persist(); toast('تم الحذف — نبدأ من #001'); Screens.backup(); } };
   $('#imp').onchange = async (e) => { const f = e.target.files[0]; if (!f) return; if (!confirm('سيتم استبدال كل البيانات الحالية بمحتوى الملف. متأكدة؟')) return; try { importFromText(await f.text()); toast('تم الاسترجاع'); go('#/today'); } catch { toast('الملف غير صالح'); } };
   const cid = $('#cid'); if (cid) { cid.oninput = () => { c.clientId = cid.value.trim(); persist(false); $('#connect').disabled = !c.clientId; }; $('#connect').onclick = () => OneDrive.login(false).catch((e) => toast(e.message)); }
   if ($('#now')) $('#now').onclick = () => { toast('جارٍ الرفع…'); OneDrive.backup().then(() => toast('تم رفع النسخة')).catch((e) => { toast('فشل الرفع: ' + e.message, 3500); Screens.backup(); }); };
@@ -724,9 +770,272 @@ Screens.backup = () => {
   if ($('#disc')) $('#disc').onclick = () => { if (confirm('فصل OneDrive؟ تبقى نسخك السابقة هناك.')) { OneDrive.disconnect(); Screens.backup(); } };
 };
 
+// ---------- Inventory: model ----------
+const UNITS = [['g', 'جرام'], ['kg', 'كيلو'], ['ml', 'مل'], ['l', 'لتر'], ['pc', 'حبة']];
+const unitLabel = (u) => (UNITS.find((x) => x[0] === u) || [])[1] || u;
+const fmtQty = (q, u) => `${Math.round(q * 100) / 100} ${unitLabel(u)}`;
+const ingById = (id) => S.ingredients.find((i) => i.id === id);
+const recipeKey = (itemId, variantName) => `${itemId}:${variantName || ''}`;
+const recipeFor = (itemId, variantName) => (S.recipes.find((r) => r.key === recipeKey(itemId, variantName)) || S.recipes.find((r) => r.key === recipeKey(itemId, '')) || { lines: [] }).lines;
+// Expand a menu line into ingredient quantities (bundles recurse into child items).
+function expand(itemId, variantName, qty, acc, depth = 0) {
+  if (depth > 4) return acc;
+  for (const l of recipeFor(itemId, variantName)) {
+    if (l.ingredientId) acc[l.ingredientId] = (acc[l.ingredientId] || 0) + l.qty * qty;
+    else if (l.childItemId) expand(l.childItemId, l.childVariant || '', l.qty * qty, acc, depth + 1);
+  }
+  return acc;
+}
+function orderConsumption(o) {
+  const acc = {};
+  o.lines.filter((l) => l.kind === 'item').forEach((l) => expand(l.itemId, l.variantName, l.qty, acc));
+  S.perOrder.forEach((p) => { acc[p.ingredientId] = (acc[p.ingredientId] || 0) + p.qty; });
+  return acc;
+}
+const consumptionCost = (acc) => Object.entries(acc).reduce((s, [id, q]) => s + q * ((ingById(id) || {}).unitCost || 0), 0);
+function applyStock(o) {
+  if (o.stockApplied) return;
+  const acc = orderConsumption(o); let cogs = 0;
+  for (const [id, q] of Object.entries(acc)) { const ing = ingById(id); if (!ing) continue; ing.qty -= q; cogs += q * (ing.unitCost || 0); S.moves.push({ id: uid(), at: nowISO(), ingredientId: id, qty: -q, reason: 'order', orderId: o.id }); }
+  o.cogs = Math.round(cogs * 100) / 100; o.stockApplied = true;
+}
+function revertStock(o) {
+  if (!o.stockApplied) return;
+  S.moves.filter((m) => m.orderId === o.id && m.reason === 'order').forEach((m) => { const ing = ingById(m.ingredientId); if (ing) ing.qty -= m.qty; });
+  S.moves = S.moves.filter((m) => !(m.orderId === o.id && m.reason === 'order'));
+  o.stockApplied = false; o.cogs = 0;
+}
+function restock(ing, qty, totalCost) {
+  ing.qty += qty; if (totalCost > 0 && qty > 0) ing.unitCost = totalCost / qty;
+  S.moves.push({ id: uid(), at: nowISO(), ingredientId: ing.id, qty, cost: totalCost || 0, reason: 'restock' });
+  if (totalCost > 0) S.expenses.push({ id: uid(), at: nowISO(), amount: totalCost, category: 'مشتريات', note: `${ing.name} — ${fmtQty(qty, ing.unit)}`, ingredientId: ing.id });
+  persist();
+}
+function markFinished(ing) {
+  // Calibration: what was on hand after the last restock ÷ orders delivered since = real average per order.
+  const lastR = S.moves.filter((m) => m.ingredientId === ing.id && m.reason === 'restock').sort((a, b) => b.at.localeCompare(a.at))[0];
+  if (lastR) {
+    const since = S.moves.filter((m) => m.ingredientId === ing.id && m.at > lastR.at && m.reason === 'order');
+    const orders = new Set(since.map((m) => m.orderId)).size;
+    const onHandAfter = ing.qty - since.reduce((s, m) => s + m.qty, 0); // add back what we recorded
+    if (orders > 0) ing.avgPerOrder = Math.round((onHandAfter / orders) * 100) / 100;
+    ing.recordedPerOrder = orders > 0 ? Math.round((-since.reduce((s, m) => s + m.qty, 0) / orders) * 100) / 100 : null;
+  }
+  S.moves.push({ id: uid(), at: nowISO(), ingredientId: ing.id, qty: -ing.qty, reason: 'finished' }); ing.qty = 0; persist();
+}
+const lowStock = () => S.ingredients.filter((i) => i.active !== false && i.lowAt > 0 && i.qty <= i.lowAt);
+
+// ---------- Inventory: screens ----------
+Screens.inventory = () => {
+  chrome('المخزون', { tab: 'inventory' });
+  const groups = [['ingredient', 'المكونات'], ['packaging', 'التغليف']];
+  app.innerHTML = `<div class="stack pad-sticky tabbed" style="gap:14px">
+    <div class="row"><a class="btn goldline grow" href="#/inventory/prep">${ico('bowl')} ورقة التحضير</a><a class="btn ghost grow" href="#/inventory/recipes">${ico('roll')} الوصفات</a><a class="btn ghost" href="#/inventory/perorder" style="width:auto;padding:12px 14px">${ico('bigbox')}</a></div>
+    ${S.ingredients.length ? groups.map(([k, l]) => { const list = S.ingredients.filter((i) => (i.kind || 'ingredient') === k); return list.length ? `<h3>${l}</h3>${list.map((i) => { const low = i.lowAt > 0 && i.qty <= i.lowAt; return `<div class="orow" style="cursor:default">
+      <a href="#/inventory/${i.id}" class="grow" style="text-decoration:none;color:inherit"><div class="row between"><span class="strong">${esc(i.name)}</span><span class="${low ? 'red strong' : 'gold strong'}">${fmtQty(i.qty, i.unit)}</span></div>
+      <div class="small muted">${i.unitCost ? `${(i.unitCost).toFixed(2)} ريال/${unitLabel(i.unit)}` : 'بدون تكلفة بعد'}${i.lowAt ? ` · تنبيه عند ${fmtQty(i.lowAt, i.unit)}` : ''}${i.avgPerOrder != null ? ` · فعلي ${i.avgPerOrder}/طلب` : ''}</div></a>
+      <button class="btn goldline sm" data-rs="${i.id}">+ شراء</button></div>`; }).join('')}` : ''; }).join('') :
+      emptyBlock('لا يوجد مكونات بعد', 'أضيفي الرز، السالمون، الصوصات، العلب والأكياس. ثم اربطيها بالأصناف من "الوصفات" ليُخصم المخزون تلقائياً مع كل توصيلة.')}
+  </div>
+  <div class="sticky above-tabs"><a class="btn" href="#/inventory/new">${ico('plus')} مكوّن جديد</a></div>`;
+  app.querySelectorAll('[data-rs]').forEach((b) => (b.onclick = () => restockSheet(ingById(b.dataset.rs), Screens.inventory)));
+};
+function restockSheet(ing, after) {
+  sheet(`<h2>شراء ${esc(ing.name)}</h2><p class="small muted">الموجود الآن ${fmtQty(ing.qty, ing.unit)}. اكتبي الكمية المشتراة وسعرها الإجمالي — التكلفة لكل ${unitLabel(ing.unit)} تُحسب تلقائياً.</p>
+    <div class="row"><label class="f grow"><span>الكمية (${unitLabel(ing.unit)})</span><input class="in big" id="rsQ" type="number" inputmode="decimal" placeholder="0"></label><label class="f grow"><span>السعر الإجمالي (ريال)</span><input class="in big" id="rsC" type="number" inputmode="decimal" placeholder="0"></label></div>
+    <div style="height:14px"></div><button class="btn" id="rsOk">إضافة للمخزون</button>`, () => { $('#rsQ').focus(); $('#rsOk').onclick = () => { const q = +$('#rsQ').value || 0; if (q <= 0) return toast('اكتبي الكمية'); restock(ing, q, +$('#rsC').value || 0); closeSheet(); after(); toast('تمت الإضافة'); }; });
+}
+Screens.ingredient = (id) => {
+  let ex = id === 'new' ? null : ingById(id);
+  if (id !== 'new' && !ex) return go('#/inventory');
+  chrome(ex ? ex.name : 'مكوّن جديد', { backBtn: true, parent: '#/inventory' });
+  const W = ex ? { ...ex } : { name: '', unit: 'g', qty: 0, lowAt: 0, unitCost: 0, kind: 'ingredient', active: true };
+  let t;
+  const commit = () => { if (!ex) { if (!W.name.trim()) return; ex = { id: uid(), active: true, qty: 0, unitCost: 0 }; S.ingredients.push(ex); history.replaceState(null, '', `#/inventory/${ex.id}`); }
+    Object.assign(ex, { name: W.name.trim() || ex.name, unit: W.unit, lowAt: +W.lowAt || 0, kind: W.kind }); if (!ex.moves) ex.qty = ex.qty; persist(); const n = $('#savedNote'); if (n) { n.textContent = 'تم الحفظ ✓'; setTimeout(() => (n.textContent = ''), 1500); } };
+  const later = () => { clearTimeout(t); t = setTimeout(commit, 500); };
+  const moves = () => ex ? S.moves.filter((m) => m.ingredientId === ex.id).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 15) : [];
+  const render = () => {
+    app.innerHTML = `<div class="stack" style="gap:16px">
+      <label class="f"><span>الاسم</span><input class="in big" id="iName" value="${esc(W.name)}" placeholder="مثال: رز السوشي"></label>
+      <div><span class="small strong muted">النوع</span><div class="chips" style="margin-top:6px">${[['ingredient', 'مكوّن'], ['packaging', 'تغليف']].map(([k, l]) => `<button class="chip ${W.kind === k ? 'on' : ''}" data-k="${k}">${l}</button>`).join('')}</div></div>
+      <div><span class="small strong muted">الوحدة</span><div class="chips" style="margin-top:6px">${UNITS.map(([k, l]) => `<button class="chip ${W.unit === k ? 'on' : ''}" data-u="${k}">${l}</button>`).join('')}</div></div>
+      <label class="f"><span>تنبيه عند الوصول إلى</span><input class="in" id="iLow" type="number" inputmode="decimal" value="${W.lowAt || ''}" placeholder="0"><div class="hint">يظهر تنبيه في "اليوم" عندما يصل المخزون لهذا الحد.</div></label>
+      ${ex ? `<div class="card stack" style="gap:8px"><div class="row between"><span class="muted">الموجود الآن</span><span class="num gold">${fmtQty(ex.qty, ex.unit)}</span></div>
+        <div class="row between small muted"><span>التكلفة</span><span>${ex.unitCost ? ex.unitCost.toFixed(2) + ' ريال/' + unitLabel(ex.unit) : '—'}</span></div>
+        ${ex.avgPerOrder != null ? `<div class="row between small"><span class="muted">الاستهلاك الفعلي لكل طلب</span><span class="gold">${ex.avgPerOrder} ${unitLabel(ex.unit)}${ex.recordedPerOrder != null ? ` <span class="muted">(المسجّل ${ex.recordedPerOrder})</span>` : ''}</span></div>` : ''}
+        <div class="row"><button class="btn goldline grow" id="rs">+ شراء</button><button class="btn ghost grow" id="fin">انتهى ✕</button></div>
+        <button class="btn ghost sm" id="adj">تعديل الكمية يدوياً</button></div>
+        <div><div class="small strong muted">آخر الحركات</div>${moves().map((m) => `<div class="log">${fmtShort(m.at)} ${fmtTime(m.at)} — ${m.reason === 'restock' ? 'شراء' : m.reason === 'order' ? 'طلب' : m.reason === 'finished' ? 'انتهى' : 'تعديل'} ${m.qty > 0 ? '+' : ''}${Math.round(m.qty * 100) / 100}${m.cost ? ` · ${money(m.cost)}` : ''}</div>`).join('') || '<div class="log">—</div>'}</div>
+        <button class="btn danger" id="del">حذف المكوّن</button>` : ''}
+      <div class="small ok center" id="savedNote"></div></div>`;
+    $('#iName').oninput = (e) => { W.name = e.target.value; later(); };
+    app.querySelectorAll('[data-k]').forEach((b) => (b.onclick = () => { W.kind = b.dataset.k; commit(); render(); }));
+    app.querySelectorAll('[data-u]').forEach((b) => (b.onclick = () => { W.unit = b.dataset.u; commit(); render(); }));
+    $('#iLow').oninput = (e) => { W.lowAt = e.target.value; later(); };
+    if (ex) {
+      $('#rs').onclick = () => restockSheet(ex, render);
+      $('#fin').onclick = () => { if (confirm(`تأكيد: ${ex.name} انتهى تماماً؟ سيُحسب الاستهلاك الفعلي لكل طلب.`)) { markFinished(ex); render(); } };
+      $('#adj').onclick = () => sheet(`<h2>الكمية الفعلية</h2><input class="in big" id="adjQ" type="number" inputmode="decimal" value="${Math.round(ex.qty * 100) / 100}"><div style="height:14px"></div><button class="btn" id="adjOk">حفظ</button>`, () => { $('#adjOk').onclick = () => { const q = +$('#adjQ').value || 0; S.moves.push({ id: uid(), at: nowISO(), ingredientId: ex.id, qty: q - ex.qty, reason: 'adjust' }); ex.qty = q; persist(); closeSheet(); render(); }; });
+      $('#del').onclick = () => { if (confirm('حذف المكوّن؟ سيُحذف من الوصفات أيضاً.')) { S.ingredients = S.ingredients.filter((i) => i.id !== ex.id); S.recipes.forEach((r) => (r.lines = r.lines.filter((l) => l.ingredientId !== ex.id))); S.perOrder = S.perOrder.filter((p) => p.ingredientId !== ex.id); persist(); go('#/inventory'); } };
+    }
+  };
+  render();
+};
+Screens.recipes = () => {
+  chrome('الوصفات', { backBtn: true, parent: '#/inventory' });
+  app.innerHTML = `<div class="stack"><div class="small muted">لكل صنف: المكونات وكمياتها لطلب واحد. البوكسات تتكوّن من أصناف أخرى. بدون وصفة لا يُخصم شيء من المخزون.</div>
+    ${S.menu.map((m) => { const keys = m.variants && m.variants.length ? m.variants.map((v) => ({ k: recipeKey(m.id, v.name), l: `${m.name} — ${v.name}` })) : [{ k: recipeKey(m.id, ''), l: m.name }];
+      return keys.map(({ k, l }) => { const r = S.recipes.find((x) => x.key === k); const n = r ? r.lines.length : 0; const cost = consumptionCost(expand(m.id, k.split(':')[1], 1, {}));
+        return `<a class="orow" href="#/inventory/recipes/${encodeURIComponent(k)}"><span style="width:44px;height:44px;border-radius:12px;background:var(--raised);overflow:hidden;display:flex;align-items:center;justify-content:center;color:var(--gold-dim);flex-shrink:0">${m.photo ? `<img src="${m.photo}" style="width:100%;height:100%;object-fit:cover">` : ico(CAT_ICON(m.category))}</span><div class="grow"><div class="strong">${esc(l)}</div><div class="small ${n ? 'muted' : 'red'}">${n ? `${n} مكوّن · تكلفة ${cost.toFixed(2)} ريال` : 'بدون وصفة'}</div></div><span class="muted">‹</span></a>`; }).join(''); }).join('')}</div>`;
+};
+Screens.recipe = (key) => {
+  const [itemId, variantName] = key.includes(':') ? key.split(':') : [key, ''];
+  const m = S.menu.find((x) => x.id === itemId); if (!m) return go('#/inventory/recipes');
+  chrome(`وصفة ${m.name}${variantName ? ' — ' + variantName : ''}`, { backBtn: true, parent: '#/inventory/recipes' });
+  let r = S.recipes.find((x) => x.key === recipeKey(itemId, variantName)); if (!r) { r = { key: recipeKey(itemId, variantName), lines: [] }; S.recipes.push(r); }
+  const render = () => {
+    const cost = consumptionCost(expand(itemId, variantName, 1, {}));
+    app.innerHTML = `<div class="stack" style="gap:14px">
+      <div class="row between"><span class="muted">تكلفة الوحدة الواحدة</span><span class="num gold">${cost.toFixed(2)} ريال</span></div>
+      ${r.lines.length ? r.lines.map((l, i) => { const ing = l.ingredientId ? ingById(l.ingredientId) : null; const child = l.childItemId ? S.menu.find((x) => x.id === l.childItemId) : null;
+        return `<div class="row"><div class="grow"><div>${ing ? esc(ing.name) : child ? `${esc(child.name)}${l.childVariant ? ' — ' + esc(l.childVariant) : ''} <span class="small muted">(صنف)</span>` : '؟'}</div></div><input class="in" data-q="${i}" type="number" inputmode="decimal" value="${l.qty}" style="width:90px;text-align:center"><span class="small muted" style="width:44px">${ing ? unitLabel(ing.unit) : 'حبة'}</span><button class="btn ghost sm" data-x="${i}">×</button></div>`; }).join('') : `<div class="muted center" style="padding:16px">لا يوجد مكونات بعد.</div>`}
+      <div class="divider"></div><span class="small strong muted">إضافة مكوّن</span>
+      <div class="chips">${S.ingredients.filter((i) => !r.lines.some((l) => l.ingredientId === i.id)).map((i) => `<button class="chip" data-add="${i.id}">${esc(i.name)}</button>`).join('') || '<span class="small muted">أضيفي مكونات من صفحة المخزون أولاً.</span>'}</div>
+      ${m.isBundle ? `<span class="small strong muted">إضافة صنف (للبوكسات)</span><div class="chips">${S.menu.filter((x) => x.id !== m.id && !x.isBundle).flatMap((x) => x.variants && x.variants.length ? x.variants.map((v) => ({ id: x.id, v: v.name, l: `${x.name} ${v.name}` })) : [{ id: x.id, v: '', l: x.name }]).map((c) => `<button class="chip" data-child="${c.id}" data-cv="${esc(c.v)}">${esc(c.l)}</button>`).join('')}</div>` : ''}
+      <div class="small muted">تُحفظ التغييرات مباشرة.</div></div>`;
+    app.querySelectorAll('[data-q]').forEach((i) => (i.oninput = () => { r.lines[+i.dataset.q].qty = +i.value || 0; persist(); }));
+    app.querySelectorAll('[data-x]').forEach((b) => (b.onclick = () => { r.lines.splice(+b.dataset.x, 1); persist(); render(); }));
+    app.querySelectorAll('[data-add]').forEach((b) => (b.onclick = () => { r.lines.push({ ingredientId: b.dataset.add, qty: 0 }); persist(); render(); app.querySelector(`[data-q="${r.lines.length - 1}"]`).focus(); }));
+    app.querySelectorAll('[data-child]').forEach((b) => (b.onclick = () => { r.lines.push({ childItemId: b.dataset.child, childVariant: b.dataset.cv, qty: 1 }); persist(); render(); }));
+  };
+  render();
+};
+Screens.perOrder = () => {
+  chrome('لكل طلب', { backBtn: true, parent: '#/inventory' });
+  const render = () => {
+    app.innerHTML = `<div class="stack" style="gap:14px"><div class="small muted">ما يُستهلك مع كل طلب بغض النظر عن الأصناف: علبة، كيس، عيدان، كيس صويا… يُخصم تلقائياً عند التوصيل.</div>
+      ${S.perOrder.map((p, i) => { const ing = ingById(p.ingredientId); return ing ? `<div class="row"><div class="grow">${esc(ing.name)}</div><input class="in" data-q="${i}" type="number" inputmode="decimal" value="${p.qty}" style="width:90px;text-align:center"><span class="small muted" style="width:44px">${unitLabel(ing.unit)}</span><button class="btn ghost sm" data-x="${i}">×</button></div>` : ''; }).join('') || '<div class="muted center" style="padding:12px">لا شيء بعد.</div>'}
+      <div class="divider"></div><div class="chips">${S.ingredients.filter((i) => !S.perOrder.some((p) => p.ingredientId === i.id)).map((i) => `<button class="chip" data-add="${i.id}">+ ${esc(i.name)}</button>`).join('')}</div></div>`;
+    app.querySelectorAll('[data-q]').forEach((i) => (i.oninput = () => { S.perOrder[+i.dataset.q].qty = +i.value || 0; persist(); }));
+    app.querySelectorAll('[data-x]').forEach((b) => (b.onclick = () => { S.perOrder.splice(+b.dataset.x, 1); persist(); render(); }));
+    app.querySelectorAll('[data-add]').forEach((b) => (b.onclick = () => { S.perOrder.push({ ingredientId: b.dataset.add, qty: 1 }); persist(); render(); }));
+  };
+  render();
+};
+Screens.prep = () => {
+  chrome('ورقة التحضير', { backBtn: true, parent: '#/inventory' });
+  const d = dayISO(); const open = S.orders.filter((o) => o.status !== 'delivered' && dayISO(o.dueAt) <= d).sort((a, b) => a.dueAt.localeCompare(b.dueAt));
+  const items = {}; open.forEach((o) => o.lines.filter((l) => l.kind === 'item').forEach((l) => { const k = `${l.itemName}${l.variantName ? ' — ' + l.variantName : ''}`; items[k] = (items[k] || 0) + l.qty; }));
+  const acc = {}; open.forEach((o) => { const c = orderConsumption(o); for (const k in c) acc[k] = (acc[k] || 0) + c[k]; });
+  const ings = Object.entries(acc).map(([id, q]) => ({ ing: ingById(id), q })).filter((x) => x.ing).sort((a, b) => a.ing.name.localeCompare(b.ing.name));
+  app.innerHTML = `<div class="stack" style="gap:16px"><div class="small muted">${fmtDay(nowISO())} · ${open.length} طلب مفتوح حتى اليوم</div>
+    <div class="card"><h3 style="margin-bottom:6px">الأصناف المطلوبة</h3>${Object.entries(items).map(([k, q]) => `<div class="row between" style="padding:3px 0"><span>${esc(k)}</span><span class="num gold" style="font-size:18px">× ${q}</span></div>`).join('') || '<div class="muted">لا شيء.</div>'}</div>
+    <div class="card"><h3 style="margin-bottom:6px">المكونات المطلوبة</h3>${ings.map(({ ing, q }) => `<div class="row between" style="padding:3px 0"><span>${esc(ing.name)}</span><span class="${ing.qty < q ? 'red' : ''}">${fmtQty(q, ing.unit)}${ing.qty < q ? ` <span class="small">(متوفر ${fmtQty(ing.qty, ing.unit)})</span>` : ''}</span></div>`).join('') || '<div class="muted small">لا يوجد وصفات مرتبطة بهذه الأصناف بعد.</div>'}</div>
+    <div class="card"><h3 style="margin-bottom:6px">الترتيب الزمني</h3>${open.map((o) => `<a class="row between" href="#/order/${o.id}" style="padding:4px 0;text-decoration:none;color:inherit"><span><span class="seal sm" style="width:30px;height:30px;font-size:9px">#${pad3(o.number)}</span> ${esc(o.customerName) || 'بدون اسم'}</span><span class="muted small">${relDay(o.dueAt)} ${fmtTime(o.dueAt)}</span></a>`).join('') || '<div class="muted">لا شيء.</div>'}</div></div>`;
+};
+
+// ---------- Finance ----------
+const EXP_CATS = ['مشتريات', 'توصيل', 'تغليف', 'غاز', 'اشتراك', 'أخرى'];
+const monthKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+function bookRecurring() {
+  const now = new Date(), mk = monthKey(now); let changed = false;
+  S.recurring.forEach((r) => { if (r.active === false) return; if (r.lastBooked === mk) return; if (now.getDate() < (r.dayOfMonth || 1)) return;
+    const at = new Date(now.getFullYear(), now.getMonth(), r.dayOfMonth || 1, 9).toISOString();
+    S.expenses.push({ id: uid(), at, amount: r.amount, category: r.category || 'اشتراك', note: r.name, recurringId: r.id, methodId: r.methodId || null }); r.lastBooked = mk; changed = true; });
+  if (changed) persist(false);
+}
+const PERIODS = [['today', 'اليوم'], ['week', 'هذا الأسبوع'], ['month', 'هذا الشهر'], ['lastmonth', 'الشهر الماضي'], ['all', 'الكل']];
+function periodRange(p) {
+  const n = new Date(); const s = new Date(n.getFullYear(), n.getMonth(), n.getDate());
+  if (p === 'today') return [s, new Date(s.getTime() + 864e5)];
+  if (p === 'week') { const d = new Date(s); d.setDate(d.getDate() - ((d.getDay() + 1) % 7)); return [d, new Date(d.getTime() + 7 * 864e5)]; } // week starts Saturday
+  if (p === 'month') return [new Date(n.getFullYear(), n.getMonth(), 1), new Date(n.getFullYear(), n.getMonth() + 1, 1)];
+  if (p === 'lastmonth') return [new Date(n.getFullYear(), n.getMonth() - 1, 1), new Date(n.getFullYear(), n.getMonth(), 1)];
+  return [new Date(2000, 0, 1), new Date(2100, 0, 1)];
+}
+const inRange = (iso, [a, b]) => { const t = new Date(iso); return t >= a && t < b; };
+let FIN_P = 'month';
+Screens.finance = () => {
+  chrome('المالية', { tab: 'finance' });
+  bookRecurring();
+  const R = periodRange(FIN_P);
+  const del = S.orders.filter((o) => o.status === 'delivered' && o.deliveredAt && inRange(o.deliveredAt, R));
+  const revenue = del.reduce((s, o) => s + o.total, 0);
+  const deliveryCharges = del.reduce((s, o) => s + (o.deliveryCharge || 0), 0);
+  const collected = S.orders.filter((o) => o.status === 'delivered' && o.deliveredAt && inRange(o.deliveredAt, R)).reduce((s, o) => s + o.paidAmount, 0);
+  const outstanding = S.orders.filter((o) => o.paymentStatus !== 'paid').reduce((s, o) => s + Math.max(0, o.total - o.paidAmount), 0);
+  const cogs = del.reduce((s, o) => s + (o.cogs || 0), 0);
+  const delivCost = del.reduce((s, o) => s + (o.deliveryCost || 0), 0);
+  const exps = S.expenses.filter((e) => inRange(e.at, R));
+  const subs = exps.filter((e) => e.recurringId && (e.category === 'توصيل' || e.methodId)).reduce((s, e) => s + e.amount, 0);
+  const purchases = exps.filter((e) => e.category === 'مشتريات').reduce((s, e) => s + e.amount, 0);
+  const other = exps.filter((e) => e.category !== 'مشتريات' && !(e.recurringId && (e.category === 'توصيل' || e.methodId))).reduce((s, e) => s + e.amount, 0);
+  const profit = revenue - cogs - delivCost - subs - other;
+  // per method
+  const byM = {}; del.forEach((o) => { const k = o.deliveryMethodId || 'pickup'; byM[k] = byM[k] || { n: 0, charge: 0, cost: 0 }; byM[k].n++; byM[k].charge += o.deliveryCharge || 0; byM[k].cost += o.deliveryCost || 0; });
+  S.expenses.filter((e) => e.methodId && inRange(e.at, R)).forEach((e) => { byM[e.methodId] = byM[e.methodId] || { n: 0, charge: 0, cost: 0 }; byM[e.methodId].cost += e.amount; });
+  // per item
+  const byI = {}; del.forEach((o) => o.lines.filter((l) => l.kind === 'item').forEach((l) => { const k = `${l.itemName}${l.variantName ? ' — ' + l.variantName : ''}`; byI[k] = byI[k] || { q: 0, rev: 0, cost: 0, itemId: l.itemId, v: l.variantName }; byI[k].q += l.qty; byI[k].rev += l.unitPrice * l.qty; byI[k].cost += consumptionCost(expand(l.itemId, l.variantName, l.qty, {})); }));
+  const items = Object.entries(byI).sort((a, b) => b[1].rev - a[1].rev);
+  const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+  app.innerHTML = `<div class="stack" style="gap:16px">
+    <div class="cattabs">${PERIODS.map(([k, l]) => `<button class="chip ${FIN_P === k ? 'on' : ''}" data-p="${k}">${l}</button>`).join('')}</div>
+    <div class="row"><div class="stat"><span class="num gold">${money(revenue)}</span><span class="small muted">الإيراد · ${del.length} طلب</span></div><div class="stat"><span class="num ${profit >= 0 ? 'ok' : 'red'}">${money(Math.round(profit))}</span><span class="small muted">صافي الربح${revenue ? ` · ${pct(profit, revenue)}%` : ''}</span></div></div>
+    <div class="card stack" style="gap:6px">
+      <div class="row between"><span>الإيراد</span><span class="gold strong">${money(revenue)}</span></div>
+      <div class="row between small muted" style="padding-right:12px"><span>منها رسوم توصيل</span><span>${money(deliveryCharges)}</span></div>
+      <div class="row between"><span>− تكلفة المكونات</span><span>${money(Math.round(cogs * 100) / 100)}</span></div>
+      <div class="row between small muted" style="padding-right:12px"><span>${cogs ? `${pct(cogs, revenue)}% من الإيراد` : 'تُحسب من الوصفات وأسعار الشراء'}</span><span></span></div>
+      <div class="row between"><span>− التوصيل</span><span>${money(delivCost + subs)}</span></div>
+      ${subs ? `<div class="row between small muted" style="padding-right:12px"><span>منها اشتراكات</span><span>${money(subs)}</span></div>` : ''}
+      <div class="row between"><span>− مصروفات أخرى</span><span>${money(other)}</span></div>
+      <div class="divider"></div>
+      <div class="row between"><span class="strong">= صافي الربح</span><span class="num ${profit >= 0 ? 'ok' : 'red'}">${money(Math.round(profit))}</span></div>
+    </div>
+    <div class="row"><div class="stat"><span class="num gold">${money(collected)}</span><span class="small muted">محصّل من طلبات الفترة</span></div><div class="stat"><span class="num ${outstanding ? 'red' : 'gold'}">${money(outstanding)}</span><span class="small muted">متبقٍ غير مدفوع (الكل)</span></div></div>
+    ${purchases ? `<div class="small muted">مشتريات مكونات في الفترة: ${money(purchases)} — لا تُخصم مرة ثانية؛ تكلفة المكونات فوق تُحسب بالاستهلاك.</div>` : ''}
+    <div class="card"><h3 style="margin-bottom:6px">حسب طريقة التوصيل</h3>${Object.entries(byM).map(([k, v]) => { const m = methodById(k); return `<div class="row between" style="padding:3px 0"><span>${m ? esc(m.name) : 'استلام'} <span class="small muted">× ${v.n}</span></span><span class="small"><span class="muted">حُصّل ${money(v.charge)}</span> · <span class="${v.cost > v.charge ? 'red' : ''}">دُفع ${money(v.cost)}</span></span></div>`; }).join('') || '<div class="muted small">لا طلبات موصّلة في الفترة.</div>'}</div>
+    <div class="card"><h3 style="margin-bottom:6px">هامش كل صنف</h3>${items.map(([k, v]) => `<div class="row between" style="padding:3px 0"><span>${esc(k)} <span class="small muted">× ${v.q}</span></span><span class="small">${money(v.rev)}${v.cost ? ` · <span class="${v.rev - v.cost > 0 ? 'ok' : 'red'}">${pct(v.rev - v.cost, v.rev)}%</span>` : ''}</span></div>`).join('') || '<div class="muted small">—</div>'}
+      ${items.length && !items.some(([, v]) => v.cost) ? '<div class="small muted" style="margin-top:6px">أضيفي الوصفات وأسعار الشراء ليظهر الهامش.</div>' : ''}</div>
+    <div class="row"><a class="btn goldline grow" href="#/finance/expenses">${ico('cash')} المصروفات</a><a class="btn ghost grow" href="#/finance/recurring">${ico('clock')} الاشتراكات</a></div>
+  </div>`;
+  app.querySelectorAll('[data-p]').forEach((b) => (b.onclick = () => { FIN_P = b.dataset.p; Screens.finance(); }));
+};
+Screens.expenses = () => {
+  chrome('المصروفات', { backBtn: true, parent: '#/finance' });
+  const list = S.expenses.slice().sort((a, b) => b.at.localeCompare(a.at)).slice(0, 60);
+  let cat = 'أخرى';
+  app.innerHTML = `<div class="stack" style="gap:14px">
+    <div class="card stack" style="gap:8px"><h3>مصروف جديد</h3>
+      <div class="row"><label class="f grow"><span>المبلغ</span><input class="in big" id="eAmt" type="number" inputmode="decimal" placeholder="0"></label><label class="f grow"><span>التاريخ</span><input class="in" id="eDate" type="date" value="${dayISO()}"></label></div>
+      <div class="chips" id="eCats">${EXP_CATS.filter((c) => c !== 'مشتريات').map((c) => `<button class="chip ${cat === c ? 'on' : ''}" data-c="${c}">${c}</button>`).join('')}</div>
+      <input class="in" id="eNote" placeholder="ملاحظة: غاز، علب من الجملة…"><button class="btn" id="eAdd">إضافة</button>
+      <div class="small muted">مشتريات المكونات تُسجَّل من المخزون (زر "شراء") لتُحدَّث التكلفة تلقائياً.</div></div>
+    ${list.map((e) => `<div class="row between" style="padding:6px 0;border-bottom:1px solid var(--line)"><div class="grow"><div>${esc(e.note) || e.category}</div><div class="small muted">${fmtShort(e.at)} · ${e.category}${e.recurringId ? ' · تلقائي' : ''}</div></div><span class="strong">${money(e.amount)}</span><button class="btn ghost sm" data-x="${e.id}">×</button></div>`).join('') || '<div class="muted center">لا مصروفات بعد.</div>'}</div>`;
+  app.querySelectorAll('[data-c]').forEach((b) => (b.onclick = () => { cat = b.dataset.c; app.querySelectorAll('[data-c]').forEach((x) => x.classList.toggle('on', x === b)); }));
+  $('#eAdd').onclick = () => { const a = +$('#eAmt').value || 0; if (a <= 0) return toast('اكتبي المبلغ'); S.expenses.push({ id: uid(), at: new Date($('#eDate').value + 'T12:00').toISOString(), amount: a, category: cat, note: $('#eNote').value.trim() }); persist(); Screens.expenses(); };
+  app.querySelectorAll('[data-x]').forEach((b) => (b.onclick = () => { if (confirm('حذف المصروف؟')) { S.expenses = S.expenses.filter((e) => e.id !== b.dataset.x); persist(); Screens.expenses(); } }));
+};
+Screens.recurring = () => {
+  chrome('الاشتراكات الشهرية', { backBtn: true, parent: '#/finance' });
+  let methodId = (S.methods.find((m) => m.kind === 'courier') || {}).id || null;
+  app.innerHTML = `<div class="stack" style="gap:14px"><div class="small muted">مثل اشتراك مرسول الشهري. يُسجَّل تلقائياً كل شهر في اليوم المحدد، ويُحسب ضمن تكلفة التوصيل.</div>
+    ${S.recurring.map((r) => `<div class="row between" style="padding:6px 0;border-bottom:1px solid var(--line)"><div class="grow"><div class="${r.active === false ? 'muted' : ''}">${esc(r.name)}</div><div class="small muted">${money(r.amount)} · يوم ${r.dayOfMonth}${r.methodId && methodById(r.methodId) ? ' · ' + esc(methodById(r.methodId).name) : ''}${r.lastBooked ? ' · آخر تسجيل ' + r.lastBooked : ''}</div></div>${switchBtn(r.active !== false, `data-t="${r.id}"`)}<button class="btn ghost sm" data-x="${r.id}">×</button></div>`).join('') || '<div class="muted center">لا اشتراكات.</div>'}
+    <div class="card stack" style="gap:8px"><h3>اشتراك جديد</h3>
+      <input class="in" id="rName" placeholder="مثال: اشتراك مرسول">
+      <div class="row"><label class="f grow"><span>المبلغ شهرياً</span><input class="in big" id="rAmt" type="number" inputmode="decimal" placeholder="40"></label><label class="f grow"><span>يوم الشهر</span><input class="in big" id="rDay" type="number" inputmode="numeric" value="1" min="1" max="28"></label></div>
+      <span class="small strong muted">مرتبط بطريقة توصيل (اختياري)</span><div class="chips">${S.methods.filter((m) => m.kind === 'courier' || m.kind === 'driver').map((m) => `<button class="chip ${methodId === m.id ? 'on' : ''}" data-m="${m.id}">${esc(m.name)}</button>`).join('')}<button class="chip ${!methodId ? 'on' : ''}" data-m="">غير مرتبط</button></div>
+      <button class="btn" id="rAdd">إضافة</button></div></div>`;
+  app.querySelectorAll('[data-m]').forEach((b) => (b.onclick = () => { methodId = b.dataset.m || null; app.querySelectorAll('[data-m]').forEach((x) => x.classList.toggle('on', x === b)); }));
+  app.querySelectorAll('[data-t]').forEach((b) => (b.onclick = () => { const r = S.recurring.find((x) => x.id === b.dataset.t); r.active = r.active === false; persist(); Screens.recurring(); }));
+  app.querySelectorAll('[data-x]').forEach((b) => (b.onclick = () => { if (confirm('حذف الاشتراك؟ المصروفات المسجّلة سابقاً تبقى.')) { S.recurring = S.recurring.filter((r) => r.id !== b.dataset.x); persist(); Screens.recurring(); } }));
+  $('#rAdd').onclick = () => { const n = $('#rName').value.trim(), a = +$('#rAmt').value || 0; if (!n || a <= 0) return toast('اكتبي الاسم والمبلغ'); S.recurring.push({ id: uid(), name: n, amount: a, dayOfMonth: Math.min(28, Math.max(1, +$('#rDay').value || 1)), category: methodId ? 'توصيل' : 'اشتراك', methodId, active: true, lastBooked: null }); persist(); bookRecurring(); Screens.recurring(); };
+};
+
 // ---------- Boot ----------
 (async function boot() {
-  load();
+  load(); bookRecurring();
   if (await OneDrive.handleRedirect()) { /* fell through with hash set */ }
   else if (S.settings.onedrive.connected && !S.settings.onedrive.needsLogin) {
     // Refresh silently in the background; if the session is gone, show the banner instead of interrupting her.
