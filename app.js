@@ -53,7 +53,8 @@ function freshState() {
     methods: SEED.methods.map((m, i) => ({ id: uid(), active: true, sort: i, photo: (typeof PRESET_PHOTOS !== 'undefined' && PRESET_PHOTOS[m.kind]) || '', ...m })),
     messages: SEED.messages.map((m) => ({ id: uid(), active: true, threshold: null, ...m })),
     orders: [],
-    settings: { onedrive: { clientId: '', connected: false, account: '', lastBackup: '' }, wizardOrder: 'items' },
+    settings: { onedrive: { clientId: '', connected: false, account: '', lastBackup: '' }, github: { repo: '', token: '', connected: false, lastBackup: '', error: '', sha: '', lastDaily: '' }, lastExport: '', wizardOrder: 'items' },
+    lastChange: '',
     ingredients: [], recipes: [], perOrder: [], moves: [], expenses: [], recurring: [],
   };
 }
@@ -64,12 +65,15 @@ function load() {
 }
 function migrate() { if (!S.settings) S.settings = {}; if (!S.settings.onedrive) S.settings.onedrive = { clientId: '', connected: false, account: '', lastBackup: '' }; S.menu.forEach((m) => { if (!('photo' in m)) m.photo = ''; });
   S.methods.forEach((m) => { if (!('photo' in m)) m.photo = ''; if (m.name === 'بارسل') m.name = 'مرسول'; if (!m.photo && typeof PRESET_PHOTOS !== 'undefined' && PRESET_PHOTOS[m.kind] && (m.kind !== 'courier' || m.name === 'مرسول')) m.photo = PRESET_PHOTOS[m.kind]; });
-  ['ingredients', 'recipes', 'perOrder', 'moves', 'expenses', 'recurring'].forEach((k) => { if (!Array.isArray(S[k])) S[k] = []; }); }
+  ['ingredients', 'recipes', 'perOrder', 'moves', 'expenses', 'recurring'].forEach((k) => { if (!Array.isArray(S[k])) S[k] = []; });
+  if (!S.settings.github) S.settings.github = { repo: '', token: '', connected: false, lastBackup: '', error: '', sha: '', lastDaily: '' }; if (!('lastExport' in S.settings)) S.settings.lastExport = ''; if (!('lastChange' in S)) S.lastChange = ''; }
 let backupTimer = null;
 function persist(triggerBackup = true) {
+  if (triggerBackup) S.lastChange = nowISO();
   localStorage.setItem(KEY, JSON.stringify(S));
-  if (triggerBackup && S.settings.onedrive.connected) { clearTimeout(backupTimer); backupTimer = setTimeout(() => OneDrive.backup().catch(() => {}), 4000); }
+  if (triggerBackup && (S.settings.onedrive.connected || S.settings.github.connected)) { clearTimeout(backupTimer); backupTimer = setTimeout(cloudBackup, 3000); }
 }
+function cloudBackup() { const jobs = []; if (S.settings.github.connected) jobs.push(GitHub.backup()); if (S.settings.onedrive.connected) jobs.push(OneDrive.backup()); return Promise.allSettled(jobs).then(() => { if (location.hash === '#/settings/backup') Screens.backup(); if (!location.hash || location.hash === '#/today') route(); }); }
 
 // ---------- Helpers ----------
 const LATN = 'ar-u-ca-gregory-nu-latn';
@@ -309,6 +313,7 @@ Screens.today = () => {
   app.innerHTML = `<div class="stack pad-sticky tabbed" style="gap:14px">
     <div class="small muted">${fmtDay(nowISO())}</div>
     ${od.connected && od.needsLogin ? `<div class="banner err">انتهت جلسة OneDrive. <a href="#/settings/backup">أعيدي تسجيل الدخول</a> ليستمر النسخ التلقائي.</div>` : ''}
+    ${backupBanner()}
     ${lowStock().length ? `<a class="banner err" href="#/inventory" style="display:block;text-decoration:none;color:var(--text)">${ico('box')} المخزون منخفض: ${lowStock().map((i) => esc(i.name)).join('، ')}</a>` : ''}
     <div class="row"><div class="stat"><span class="num gold">${openToday.length}</span><span class="small muted">مفتوحة اليوم</span></div>
       <div class="stat"><span class="num gold">${doneToday.length}</span><span class="small muted">وصلت اليوم</span></div>
@@ -577,7 +582,7 @@ Screens.settings = () => {
   const items = [['menu', 'roll', 'المنيو والأسعار', 'الأصناف، الصور، الأحجام، الأسعار'], ['addons', 'sauce', 'الإضافات', 'الصوصات والإضافات وأسعارها'], ['delivery', 'driver', 'طرق التوصيل', 'توصيلي، مندوب، بارسل… مع الصور'], ['messages', 'msg', 'رسائل', 'رسائل تظهر بعد كل توصيلة'],
     ['backup', 'cloud', 'النسخ الاحتياطي', od.connected ? `OneDrive متصل${od.lastBackup ? ' · آخر نسخة ' + fmtShort(od.lastBackup) + ' ' + fmtTime(od.lastBackup) : ''}` : 'تصدير واسترجاع، وربط OneDrive']];
   app.innerHTML = items.map(([k, ic, t, b]) => `<a class="srow" href="#/settings/${k}"><span class="ic">${ico(ic)}</span><div class="grow"><div class="strong">${t}</div><div class="small muted">${b}</div></div><span class="muted">‹</span></a>`).join('') +
-    `<div class="small faint" style="padding-top:24px">ورقة حُب · نسخة الويب 3 · البيانات محفوظة على هذا الجهاز فقط.</div>`;
+    `<div class="small faint" style="padding-top:24px">ورقة حُب · نسخة الويب 4 · البيانات محفوظة على هذا الجهاز فقط.</div>`;
 };
 
 Screens.menu = () => {
@@ -672,18 +677,19 @@ Screens.messages = () => {
 };
 
 // ---------- Backup: export / import / OneDrive ----------
-const exportJSON = () => JSON.stringify({ app: 'waraqat-hob', exportedAt: nowISO(), state: S }, null, 1);
+const exportJSON = () => { const st = JSON.parse(JSON.stringify(S)); if (st.settings && st.settings.github) st.settings.github = { ...st.settings.github, token: '' }; return JSON.stringify({ app: 'waraqat-hob', exportedAt: nowISO(), state: st }, null, 1); };
 const backupName = () => `waraqat-hob-${dayISO()}.json`;
 async function exportFile() {
   const blob = new Blob([exportJSON()], { type: 'application/json' });
   const file = new File([blob], backupName(), { type: 'application/json' });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: 'نسخة ورقة حُب' }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+  if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: 'نسخة ورقة حُب' }); markExported(); return; } catch (e) { if (e.name === 'AbortError') return; } }
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = backupName(); document.body.appendChild(a); a.click(); a.remove();
 }
+function markExported() { S.settings.lastExport = nowISO(); persist(false); }
 function importFromText(text) {
   const j = JSON.parse(text); const st = j.state || j;
   if (!st || !Array.isArray(st.orders) || !Array.isArray(st.menu)) throw new Error('bad file');
-  S = st; migrate(); persist(false);
+  const keepGh = S && S.settings && S.settings.github; S = st; migrate(); if (keepGh && keepGh.token) S.settings.github = { ...S.settings.github, ...keepGh }; persist(false);
 }
 
 const OneDrive = {
@@ -742,10 +748,64 @@ const OneDrive = {
   disconnect() { this.tok.clear(); Object.assign(this.cfg(), { connected: false, account: '', needsLogin: false }); persist(false); },
 };
 
+
+// ---------- GitHub vault: every change committed to a private repo ----------
+const GitHub = {
+  cfg: () => S.settings.github,
+  api: (path, opt = {}) => fetch(`https://api.github.com${path}`, { ...opt, headers: { Authorization: 'Bearer ' + S.settings.github.token, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(opt.headers || {}) } }),
+  b64: (str) => { const bytes = new TextEncoder().encode(str); let bin = ''; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(bin); },
+  unb64: (b64) => { const bin = atob(b64.replace(/\n/g, '')); const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0)); return new TextDecoder().decode(bytes); },
+  async connect(repo, token) {
+    const c = this.cfg(); c.repo = repo.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\/$/, ''); c.token = token.trim();
+    const r = await this.api(`/repos/${c.repo}`); if (!r.ok) { c.connected = false; throw new Error(r.status === 404 ? 'المستودع غير موجود أو الرمز لا يملك صلاحية عليه' : r.status === 401 ? 'الرمز غير صالح' : 'خطأ ' + r.status); }
+    const j = await r.json(); if (!j.private) throw new Error('المستودع عام — يجب أن يكون خاصاً (Private)');
+    c.connected = true; c.error = ''; persist(false); await this.backup();
+  },
+  async put(path, content, message) {
+    const c = this.cfg(); let sha = null;
+    const g = await this.api(`/repos/${c.repo}/contents/${path}`); if (g.ok) sha = (await g.json()).sha;
+    const r = await this.api(`/repos/${c.repo}/contents/${path}`, { method: 'PUT', body: JSON.stringify({ message, content: this.b64(content), ...(sha ? { sha } : {}) }) });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.message || 'upload ' + r.status); }
+  },
+  async backup() {
+    const c = this.cfg(); if (!c.connected) return;
+    try {
+      const data = exportJSON(); const n = S.orders.length;
+      await this.put('waraqat-hob-latest.json', data, `backup: ${n} orders · ${new Date().toLocaleString('en-GB')}`);
+      const today = dayISO(); if (c.lastDaily !== today) { await this.put(`history/${backupName()}`, data, `daily snapshot ${today}`); c.lastDaily = today; }
+      c.lastBackup = nowISO(); c.error = ''; persist(false);
+    } catch (e) { c.error = e.message; persist(false); throw e; }
+  },
+  async restore() {
+    const c = this.cfg(); const r = await this.api(`/repos/${c.repo}/contents/waraqat-hob-latest.json`); if (!r.ok) throw new Error('لا توجد نسخة في المستودع');
+    const j = await r.json(); importFromText(this.unb64(j.content));
+  },
+  disconnect() { Object.assign(this.cfg(), { token: '', connected: false, error: '' }); persist(false); },
+};
+const backupAge = () => { const t = [S.settings.github.lastBackup, S.settings.onedrive.lastBackup, S.settings.lastExport].filter(Boolean).sort().pop(); return t ? (Date.now() - new Date(t)) / 864e5 : null; };
+const backupBanner = () => {
+  const gh = S.settings.github; const age = backupAge();
+  if (gh.connected && gh.error) return `<a class="banner err" href="#/settings/backup" style="display:block;text-decoration:none;color:var(--text)">${ico('cloud')} توقف النسخ التلقائي إلى GitHub: ${esc(gh.error)}. اضغطي للمراجعة.</a>`;
+  if (gh.connected && S.lastChange && gh.lastBackup && gh.lastBackup < S.lastChange && (Date.now() - new Date(S.lastChange)) > 6e4 && !navigator.onLine) return `<div class="banner">${ico('cloud')} بلا إنترنت — ستُرفع النسخة عند الاتصال.</div>`;
+  if (!gh.connected && !S.settings.onedrive.connected && S.orders.length && (age === null || age > 7)) return `<a class="banner ${age === null || age > 14 ? 'err' : ''}" href="#/settings/backup" style="display:block;text-decoration:none;color:var(--text)">${ico('cloud')} ${age === null ? 'لم تُحفظ نسخة احتياطية بعد.' : `آخر نسخة قبل ${Math.floor(age)} يوم.`} اضغطي لحفظ نسخة.</a>`;
+  return '';
+};
+
 Screens.backup = () => {
   chrome('النسخ الاحتياطي', { backBtn: true });
   const c = S.settings.onedrive;
+  const g = S.settings.github;
   app.innerHTML = `<div class="stack" style="gap:20px">
+    <div class="card stack" style="gap:8px"><h2>${ico('cloud')} GitHub تلقائي</h2>
+      ${g.connected ? `<div class="small ${g.error ? 'red' : 'ok'}">${g.error ? 'متوقف: ' + esc(g.error) : 'متصل'} · ${esc(g.repo)}</div>
+        <div class="small muted">${g.lastBackup ? 'آخر نسخة: ' + fmtDay(g.lastBackup) + ' ' + fmtTime(g.lastBackup) : 'لم تُرفع نسخة بعد'} · تُرفع نسخة بعد كل تغيير، ونسخة يومية في مجلد history.</div>
+        <div class="row"><button class="btn goldline grow" id="ghNow">نسخ الآن</button><button class="btn ghost grow" id="ghRestore">استرجاع من GitHub</button></div>
+        <button class="btn ghost sm" id="ghDisc">فصل GitHub</button>` :
+        `<div class="small muted">كل تغيير يُحفظ كنسخة في مستودع خاص على GitHub، مع تاريخ كامل. الإعداد مرة واحدة (التعليمات في README).</div>
+        <label class="f"><span>المستودع</span><input class="in" id="ghRepo" value="${esc(g.repo)}" placeholder="ahmaragh/waraqat-hob-data" autocapitalize="off" style="direction:ltr;text-align:left"></label>
+        <label class="f"><span>رمز الوصول (Fine-grained token)</span><input class="in" id="ghTok" type="password" placeholder="github_pat_…" autocapitalize="off" style="direction:ltr;text-align:left"></label>
+        <button class="btn" id="ghConnect">ربط GitHub</button>`}
+    </div>
     <div class="card stack" style="gap:8px"><h2>نسخة يدوية</h2><div class="small muted">ملف واحد فيه كل شيء: الطلبات، المنيو، الأسعار، الإعدادات. احفظيه في iCloud Drive أو OneDrive من قائمة المشاركة.</div>
       <button class="btn goldline" id="exp">حفظ نسخة الآن</button>
       <label class="btn ghost" style="cursor:pointer">استرجاع من ملف<input type="file" id="imp" accept="application/json,.json" style="display:none"></label>
@@ -762,6 +822,10 @@ Screens.backup = () => {
     <div class="small faint">عنوان إعادة التوجيه لتسجيل التطبيق: <span style="direction:ltr;display:inline-block">${esc(OneDrive.redirect())}</span></div>
   </div>`;
   $('#exp').onclick = exportFile;
+  if ($('#ghConnect')) $('#ghConnect').onclick = async () => { const b = $('#ghConnect'); b.disabled = true; b.textContent = 'جارٍ الربط…'; try { await GitHub.connect($('#ghRepo').value, $('#ghTok').value); toast('تم الربط ورُفعت أول نسخة'); Screens.backup(); } catch (e) { toast('تعذّر الربط: ' + e.message, 4000); b.disabled = false; b.textContent = 'ربط GitHub'; } };
+  if ($('#ghNow')) $('#ghNow').onclick = () => { toast('جارٍ الرفع…'); GitHub.backup().then(() => { toast('تم رفع النسخة'); Screens.backup(); }).catch((e) => { toast('فشل: ' + e.message, 3500); Screens.backup(); }); };
+  if ($('#ghRestore')) $('#ghRestore').onclick = async () => { if (!confirm('استبدال كل البيانات الحالية بآخر نسخة من GitHub؟')) return; try { await GitHub.restore(); toast('تم الاسترجاع'); go('#/today'); } catch (e) { toast(e.message, 3500); } };
+  if ($('#ghDisc')) $('#ghDisc').onclick = () => { if (confirm('فصل GitHub؟ النسخ السابقة تبقى في المستودع.')) { GitHub.disconnect(); Screens.backup(); } };
   $('#wipeOrders').onclick = () => { if (confirm('حذف جميع الطلبات وحركات المخزون المرتبطة بها؟ المنيو والإعدادات تبقى. لا يمكن التراجع.')) { S.orders.forEach(revertStock); S.orders = []; S.nextOrderNumber = 1; persist(); toast('تم الحذف — نبدأ من #001'); Screens.backup(); } };
   $('#imp').onchange = async (e) => { const f = e.target.files[0]; if (!f) return; if (!confirm('سيتم استبدال كل البيانات الحالية بمحتوى الملف. متأكدة؟')) return; try { importFromText(await f.text()); toast('تم الاسترجاع'); go('#/today'); } catch { toast('الملف غير صالح'); } };
   const cid = $('#cid'); if (cid) { cid.oninput = () => { c.clientId = cid.value.trim(); persist(false); $('#connect').disabled = !c.clientId; }; $('#connect').onclick = () => OneDrive.login(false).catch((e) => toast(e.message)); }
@@ -1041,6 +1105,8 @@ Screens.recurring = () => {
     // Refresh silently in the background; if the session is gone, show the banner instead of interrupting her.
     OneDrive.token().then(() => OneDrive.backup()).catch(() => { S.settings.onedrive.needsLogin = true; persist(false); if (location.hash === '#/today' || !location.hash) route(); });
   }
+  if (S.settings.github.connected && (!S.settings.github.lastBackup || S.settings.github.lastBackup < S.lastChange)) GitHub.backup().catch(() => {}).then(() => { if (!location.hash || location.hash === '#/today') route(); });
+  window.addEventListener('online', () => { if (S.settings.github.connected) GitHub.backup().catch(() => {}); });
   route();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
