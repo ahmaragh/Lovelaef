@@ -78,7 +78,7 @@ function cloudBackup() { const jobs = []; if (S.settings.github.connected) jobs.
 // ---------- Helpers ----------
 const LATN = 'ar-u-ca-gregory-nu-latn';
 const money = (n) => `${Number.isInteger(+n) ? +n : (+n).toFixed(2)} ريال`;
-const pad3 = (n) => String(n).padStart(3, '0');
+const pad3 = (n) => (n <= 0 ? 'س' + String(1 - n).padStart(2, '0') : String(n).padStart(3, '0'));
 const dayISO = (d = new Date()) => { d = new Date(d); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const fmtTime = (iso) => new Date(iso).toLocaleTimeString(LATN, { hour: 'numeric', minute: '2-digit' });
 const fmtDay = (iso) => new Date(iso).toLocaleDateString(LATN, { weekday: 'long', day: 'numeric', month: 'long' });
@@ -582,7 +582,7 @@ Screens.settings = () => {
   const items = [['menu', 'roll', 'المنيو والأسعار', 'الأصناف، الصور، الأحجام، الأسعار'], ['addons', 'sauce', 'الإضافات', 'الصوصات والإضافات وأسعارها'], ['delivery', 'driver', 'طرق التوصيل', 'توصيلي، مندوب، بارسل… مع الصور'], ['messages', 'msg', 'رسائل', 'رسائل تظهر بعد كل توصيلة'],
     ['backup', 'cloud', 'النسخ الاحتياطي', od.connected ? `OneDrive متصل${od.lastBackup ? ' · آخر نسخة ' + fmtShort(od.lastBackup) + ' ' + fmtTime(od.lastBackup) : ''}` : 'تصدير واسترجاع، وربط OneDrive']];
   app.innerHTML = items.map(([k, ic, t, b]) => `<a class="srow" href="#/settings/${k}"><span class="ic">${ico(ic)}</span><div class="grow"><div class="strong">${t}</div><div class="small muted">${b}</div></div><span class="muted">‹</span></a>`).join('') +
-    `<div class="small faint" style="padding-top:24px">ورقة حُب · نسخة الويب 4 · البيانات محفوظة على هذا الجهاز فقط.</div>`;
+    `<div class="small faint" style="padding-top:24px">ورقة حُب · نسخة الويب 5 · البيانات محفوظة على هذا الجهاز فقط.</div>`;
 };
 
 Screens.menu = () => {
@@ -791,6 +791,65 @@ const backupBanner = () => {
   return '';
 };
 
+
+// ---------- Additive import: adds to what's on the phone, never replaces ----------
+function mergeImport(pack) {
+  const rep = { ingredients: 0, purchases: 0, recipes: 0, perOrder: 0, orders: 0, expenses: 0, photos: 0, skipped: 0 };
+  const byName = (arr, n) => arr.find((x) => (x.name || '').trim() === (n || '').trim());
+  // 1) ingredients (+ opening purchases)
+  (pack.ingredients || []).forEach((it) => {
+    let ing = byName(S.ingredients, it.name);
+    if (!ing) { ing = { id: uid(), name: it.name, unit: it.unit || 'g', qty: 0, lowAt: +it.lowAt || 0, unitCost: 0, kind: it.kind || 'ingredient', active: true }; S.ingredients.push(ing); rep.ingredients++; }
+    (it.purchases || []).forEach((pu) => {
+      const at = pu.at || nowISO();
+      if (S.moves.some((m) => m.ingredientId === ing.id && m.reason === 'restock' && m.at === at && m.qty === pu.qty)) return; // idempotent
+      ing.qty += pu.qty; if (pu.cost > 0 && pu.qty > 0) ing.unitCost = pu.cost / pu.qty;
+      S.moves.push({ id: uid(), at, ingredientId: ing.id, qty: pu.qty, cost: pu.cost || 0, reason: 'restock' });
+      if (pu.cost > 0) S.expenses.push({ id: uid(), at, amount: pu.cost, category: 'مشتريات', note: `${ing.name} — استيراد`, ingredientId: ing.id });
+      rep.purchases++;
+    });
+  });
+  // 2) menu photos + lead times (only fills blanks)
+  (pack.menuPhotos || []).forEach((mp) => { const m = byName(S.menu, mp.name); if (m && !m.photo && mp.photo) { m.photo = mp.photo; rep.photos++; } });
+  // 3) recipes — only for items that have none yet
+  const ingId = (n) => (byName(S.ingredients, n) || {}).id;
+  (pack.recipes || []).forEach((r) => {
+    const m = byName(S.menu, r.item); if (!m) { rep.skipped++; return; }
+    const key = `${m.id}:${r.variant || ''}`;
+    if (S.recipes.some((x) => x.key === key && x.lines.length)) { rep.skipped++; return; }
+    const lines = (r.lines || []).map((l) => l.item ? { childItemId: (byName(S.menu, l.item) || {}).id, childVariant: l.variant || '', qty: l.qty } : { ingredientId: ingId(l.name), qty: l.qty }).filter((l) => l.ingredientId || l.childItemId);
+    S.recipes = S.recipes.filter((x) => x.key !== key); S.recipes.push({ key, lines }); rep.recipes++;
+  });
+  // 4) per-order consumables
+  (pack.perOrder || []).forEach((p) => { const id = ingId(p.name); if (id && !S.perOrder.some((x) => x.ingredientId === id)) { S.perOrder.push({ ingredientId: id, qty: p.qty }); rep.perOrder++; } });
+  // 5) expenses (equipment etc.)
+  (pack.expenses || []).forEach((e) => { if (S.expenses.some((x) => x.note === e.note && x.amount === e.amount)) return; S.expenses.push({ id: uid(), at: e.at || nowISO(), amount: e.amount, category: e.category || 'أخرى', note: e.note || '' }); rep.expenses++; });
+  // 6) historical orders — numbered backwards from 0 so her live series is untouched
+  const methodByKind = (k) => S.methods.find((m) => m.kind === k) || S.methods.find((m) => m.kind === 'driver');
+  let hist = Math.min(0, ...S.orders.map((o) => o.number).filter((n) => n <= 0), 1);
+  (pack.orders || []).forEach((od) => {
+    if (S.orders.some((o) => o.importKey && o.importKey === od.key)) return; // idempotent
+    const lines = (od.lines || []).map((l) => { const m = byName(S.menu, l.item); const v = l.variant || null;
+      const price = m ? (v && m.variants.length ? (m.variants.find((x) => x.name === v) || {}).price : m.price) : 0;
+      return m ? { itemId: m.id, itemName: m.name, variantName: v, unitPrice: l.price != null ? l.price : (price || 0), qty: l.qty, kind: 'item' } : null; }).filter(Boolean);
+    (od.addons || []).forEach((a) => { const ad = byName(S.addons, a.name); if (ad) lines.push({ itemId: ad.id, itemName: ad.name, variantName: null, unitPrice: a.price != null ? a.price : ad.price, qty: a.qty || 1, kind: 'addon' }); });
+    const itemsTotal = lines.reduce((s2, l) => s2 + l.unitPrice * l.qty, 0);
+    const total = od.total != null ? od.total : Math.max(0, itemsTotal + (od.deliveryCharge || 0) - (od.discount || 0));
+    const method = od.method ? methodByKind(od.method) : null;
+    const at = od.at;
+    const o = { id: uid(), number: --hist, importKey: od.key, customerName: od.customer || '', customerPhone: od.phone || '',
+      fulfilment: od.method === 'pickup' ? 'pickup' : 'delivery', deliveryMethodId: method ? method.id : null, address: od.address || '', mapsUrl: '',
+      dueAt: at, notes: od.notes || '', lines, itemsTotal, deliveryCharge: od.deliveryCharge || 0, deliveryCost: od.deliveryCost != null ? od.deliveryCost : null,
+      discount: od.discount || 0, total, paymentStatus: od.paid === false ? 'unpaid' : 'paid', paymentMethod: od.paid === false ? null : (od.payMethod || 'transfer'),
+      paidAmount: od.paid === false ? 0 : total, status: 'delivered', createdAt: at, updatedAt: nowISO(), deliveredAt: at, stockApplied: false, cogs: 0,
+      log: [{ at: nowISO(), change: 'استُورد من السجل السابق' }] };
+    o.cogs = Math.round(consumptionCost(orderConsumption(o)) * 100) / 100; // costed, but stock is NOT deducted for history
+    S.orders.push(o); rep.orders++;
+  });
+  persist();
+  return rep;
+}
+
 Screens.backup = () => {
   chrome('النسخ الاحتياطي', { backBtn: true });
   const c = S.settings.onedrive;
@@ -810,6 +869,9 @@ Screens.backup = () => {
       <button class="btn goldline" id="exp">حفظ نسخة الآن</button>
       <label class="btn ghost" style="cursor:pointer">استرجاع من ملف<input type="file" id="imp" accept="application/json,.json" style="display:none"></label>
       <button class="btn danger" id="wipeOrders">حذف كل الطلبات (بداية جديدة)</button></div>
+    <div class="card stack" style="gap:8px"><h2>${ico('box')} استيراد إضافي</h2>
+      <div class="small muted">يضيف مكونات ووصفات وطلبات سابقة إلى ما هو موجود — لا يحذف ولا يستبدل شيئاً. الطلبات السابقة تأخذ أرقاماً خاصة بها (#000 فأقل).</div>
+      <label class="btn goldline" style="cursor:pointer">اختيار ملف الاستيراد<input type="file" id="impAdd" accept="application/json,.json" style="display:none"></label></div>
     <div class="card stack" style="gap:8px"><h2>OneDrive تلقائي</h2>
       ${c.connected ? `<div class="small ${c.needsLogin ? 'red' : 'ok'}">${c.needsLogin ? 'انتهت الجلسة — تسجيل دخول مطلوب' : 'متصل'} · ${esc(c.account)}</div>
         <div class="small muted">${c.lastBackup ? 'آخر نسخة: ' + fmtDay(c.lastBackup) + ' ' + fmtTime(c.lastBackup) : 'لم تُرفع نسخة بعد'} · تُرفع نسخة تلقائياً بعد كل تغيير إلى مجلد Apps/ورقة حُب.</div>
@@ -822,6 +884,19 @@ Screens.backup = () => {
     <div class="small faint">عنوان إعادة التوجيه لتسجيل التطبيق: <span style="direction:ltr;display:inline-block">${esc(OneDrive.redirect())}</span></div>
   </div>`;
   $('#exp').onclick = exportFile;
+  $('#impAdd').onchange = async (e) => { const f = e.target.files[0]; if (!f) return; try { const pack = JSON.parse(await f.text());
+    if (!pack || pack.app !== 'waraqat-hob-import') return toast('هذا ليس ملف استيراد');
+    const r = mergeImport(pack);
+    sheet(`<h2>تم الاستيراد</h2><div class="stack small" style="gap:4px">
+      <div class="row between"><span>مكوّنات جديدة</span><span class="gold">${r.ingredients}</span></div>
+      <div class="row between"><span>عمليات شراء</span><span class="gold">${r.purchases}</span></div>
+      <div class="row between"><span>وصفات</span><span class="gold">${r.recipes}</span></div>
+      <div class="row between"><span>مستهلكات لكل طلب</span><span class="gold">${r.perOrder}</span></div>
+      <div class="row between"><span>طلبات سابقة</span><span class="gold">${r.orders}</span></div>
+      <div class="row between"><span>مصروفات</span><span class="gold">${r.expenses}</span></div>
+      <div class="row between"><span>صور أصناف</span><span class="gold">${r.photos}</span></div>
+      </div><div style="height:14px"></div><button class="btn" id="impOk">تمام</button>`, () => { $('#impOk').onclick = () => { closeSheet(); go('#/inventory'); }; });
+  } catch (err) { toast('تعذّرت قراءة الملف: ' + err.message, 4000); } };
   if ($('#ghConnect')) $('#ghConnect').onclick = async () => { const b = $('#ghConnect'); b.disabled = true; b.textContent = 'جارٍ الربط…'; try { await GitHub.connect($('#ghRepo').value, $('#ghTok').value); toast('تم الربط ورُفعت أول نسخة'); Screens.backup(); } catch (e) { toast('تعذّر الربط: ' + e.message, 4000); b.disabled = false; b.textContent = 'ربط GitHub'; } };
   if ($('#ghNow')) $('#ghNow').onclick = () => { toast('جارٍ الرفع…'); GitHub.backup().then(() => { toast('تم رفع النسخة'); Screens.backup(); }).catch((e) => { toast('فشل: ' + e.message, 3500); Screens.backup(); }); };
   if ($('#ghRestore')) $('#ghRestore').onclick = async () => { if (!confirm('استبدال كل البيانات الحالية بآخر نسخة من GitHub؟')) return; try { await GitHub.restore(); toast('تم الاسترجاع'); go('#/today'); } catch (e) { toast(e.message, 3500); } };
