@@ -72,6 +72,7 @@ function persist(triggerBackup = true) {
   if (triggerBackup) S.lastChange = nowISO();
   localStorage.setItem(KEY, JSON.stringify(S));
   if (triggerBackup && (S.settings.onedrive.connected || S.settings.github.connected)) { clearTimeout(backupTimer); backupTimer = setTimeout(cloudBackup, 3000); }
+  if (triggerBackup && typeof scheduleNotifySync === 'function') { scheduleNotifySync(); updateBadge(); }
 }
 function cloudBackup() { const jobs = []; if (S.settings.github.connected) jobs.push(GitHub.backup()); if (S.settings.onedrive.connected) jobs.push(OneDrive.backup()); return Promise.allSettled(jobs).then(() => { if (location.hash === '#/settings/backup') Screens.backup(); if (!location.hash || location.hash === '#/today') route(); }); }
 
@@ -142,6 +143,7 @@ const I = {
   pin: '<path d="M12 22s7-7 7-12a7 7 0 0 0-14 0c0 5 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   edit: '<path d="M4 20h4l11-11-4-4L4 16z"/>',
+  bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
 };
 const ico = (n, cls = '') => `<svg class="ico ${cls}" viewBox="0 0 24 24">${I[n] || I.other}</svg>`;
@@ -216,6 +218,7 @@ function route() {
   if (p[0] === 'orders') return Screens.orders();
   if (p[0] === 'order' && p[1] === 'new') return Screens.orderForm(null);
   if (p[0] === 'order' && p[2] === 'edit') return Screens.orderForm(p[1]);
+  if (p[0] === 'order' && p[2] === 'prep') return Screens.orderPrep(p[1]);
   if (p[0] === 'order') return Screens.orderDetail(p[1]);
   if (p[0] === 'inventory' && p[1] === 'prep') return Screens.prep();
   if (p[0] === 'inventory' && p[1] === 'recipes' && p[2]) return Screens.recipe(decodeURIComponent(p[2]));
@@ -232,6 +235,7 @@ function route() {
   if (p[0] === 'settings' && p[1] === 'delivery') return Screens.delivery();
   if (p[0] === 'settings' && p[1] === 'messages') return Screens.messages();
   if (p[0] === 'settings' && p[1] === 'backup') return Screens.backup();
+  if (p[0] === 'settings' && p[1] === 'notify') return Screens.notify();
   if (p[0] === 'settings') return Screens.settings();
   return Screens.today();
 }
@@ -269,7 +273,7 @@ function orderCard(o, { showDay = false } = {}) {
       </div>
       <span class="ic" style="width:36px;height:36px;border-radius:50%;background:var(--raised);display:flex;align-items:center;justify-content:center;color:var(--gold);overflow:hidden;flex-shrink:0">${methodIcon(m)}</span>
     </a>
-    <div class="items ellip">${esc(itemsSummary(o))}${o.address ? ` · ${esc(o.address)}` : ''}</div>
+    <div class="items ellip">${o.notes ? '<span class="gold">📝</span> ' : ''}${esc(itemsSummary(o))}${o.address ? ` · ${esc(o.address)}` : ''}</div>
     ${nx ? `<div class="act"><button class="btn ${nx === 'delivered' ? '' : 'goldline'}" data-adv="${o.id}">${nextLabel(nx)}</button>${o.customerPhone ? `<a class="btn ghost wa" href="${waHref(o)}" title="واتساب">${ico('wa')}</a>` : ''}</div>` : ''}
   </div>`;
 }
@@ -281,6 +285,7 @@ function advanceOrder(o, after) {
   const m = methodById(o.deliveryMethodId); const kind = m ? m.kind : null;
   const isSelf = ['self_her', 'self_husband', 'pickup'].includes(kind) || o.fulfilment === 'pickup';
   const finish = (cost) => { setStatus(o, 'delivered', cost); closeSheet(); const msg = pickDeliveredMessage(kind); after(); if (msg) showLove(msg); };
+  if (nx === 'preparing') { setStatus(o, nx); go(`#/order/${o.id}/prep`); return; }
   if (nx !== 'delivered') { setStatus(o, nx); after(); return; }
   if (isSelf) return finish(0);
   sheet(`<h2>كم دفعتِ للتوصيل؟</h2><p class="muted">${esc(m ? m.name : '')} · العميلة دفعت ${money(o.deliveryCharge)}. اكتبي ما دفعتيه أنتِ فعلاً.</p>
@@ -295,9 +300,10 @@ function pickDeliveredMessage(kind) {
   const ev = ms.filter((m) => m.trigger === 'delivered'); return ev.length ? ev[total % ev.length].text : null;
 }
 function logChange(o, change) { (o.log = o.log || []).unshift({ at: nowISO(), change }); o.updatedAt = nowISO(); }
-function setStatus(o, s, cost) { o.status = s; if (s === 'delivered') { o.deliveredAt = nowISO(); o.deliveryCost = cost == null ? null : cost; applyStock(o); } else { o.deliveredAt = null; revertStock(o); } logChange(o, `الحالة: ${statusLabel(s)}`); persist(); }
+function setStatus(o, s, cost) { o.status = s; if (s === 'ready') o.readyAt = nowISO(); if (s === 'delivered') { o.deliveredAt = nowISO(); o.deliveryCost = cost == null ? null : cost; applyStock(o); } else { o.deliveredAt = null; revertStock(o); } logChange(o, `الحالة: ${statusLabel(s)}`); persist(); }
 function showLove(msg) { sheet(`<div class="love"><div class="heart">❤</div><p>${esc(msg)}</p><div class="small muted">— زوجك</div><div style="height:14px"></div><button class="btn goldline" id="loveOk">يلا نكمل</button></div>`, () => { $('#loveOk').onclick = closeSheet; }); }
 
+const notifyBanner = () => { const n = notifyCfg(); if (n.role !== 'wife') return ''; if (n.on && n.error) return `<a class="banner err" href="#/settings/notify" style="display:block;text-decoration:none;color:var(--text)">${ico('bell')} التنبيهات لا تتزامن: ${esc(n.error)}</a>`; if (!n.on && n.server && S.orders.length) return `<a class="banner" href="#/settings/notify" style="display:block;text-decoration:none;color:var(--text)">${ico('bell')} فعّلي التنبيهات ليصلك تذكير بكل طلب في وقته.</a>`; return ''; };
 // ---------- Today ----------
 Screens.today = () => {
   chrome('اليوم', { tab: 'today' });
@@ -314,6 +320,7 @@ Screens.today = () => {
     <div class="small muted">${fmtDay(nowISO())}</div>
     ${od.connected && od.needsLogin ? `<div class="banner err">انتهت جلسة OneDrive. <a href="#/settings/backup">أعيدي تسجيل الدخول</a> ليستمر النسخ التلقائي.</div>` : ''}
     ${backupBanner()}
+    ${notifyBanner()}
     ${lowStock().length ? `<a class="banner err" href="#/inventory" style="display:block;text-decoration:none;color:var(--text)">${ico('box')} المخزون منخفض: ${lowStock().map((i) => esc(i.name)).join('، ')}</a>` : ''}
     <div class="row"><div class="stat"><span class="num gold">${openToday.length}</span><span class="small muted">مفتوحة اليوم</span></div>
       <div class="stat"><span class="num gold">${doneToday.length}</span><span class="small muted">وصلت اليوم</span></div>
@@ -538,6 +545,7 @@ Screens.orderDetail = (id) => {
       <span style="width:48px;height:48px;border-radius:50%;background:var(--raised);display:flex;align-items:center;justify-content:center;color:var(--gold);overflow:hidden;font-size:22px">${methodIcon(m)}</span></div>
     <div class="card" style="padding:14px 10px 10px">
       <div class="stops">${STATUS.map((s, i) => `<div class="st ${i < idx ? 'done' : i === idx ? 'on' : ''}" data-s="${s}"><div class="d">${i < idx ? ico('check') : i + 1}</div><div class="l">${statusLabel(s)}</div></div>`).join('')}</div>
+      ${o.status === 'preparing' || o.status === 'new' ? `<a class="btn ghost" href="#/order/${o.id}/prep" style="margin-top:10px">${ico('bowl')} ورقة تحضير الطلب${o.notes ? ' · 📝' : ''}</a>` : ''}
       ${nx ? `<button class="btn" id="advance" style="margin-top:10px;font-size:17px;padding:14px">${nextLabel(nx)}</button>` : `<div class="small muted center" style="margin-top:8px">وصل ${o.deliveredAt ? fmtDay(o.deliveredAt) + ' ' + fmtTime(o.deliveredAt) : ''}${o.deliveryCost ? ' · تكلفة التوصيل ' + money(o.deliveryCost) : ''}</div>`}
     </div>
     <div class="card stack" style="gap:6px">
@@ -564,7 +572,7 @@ Screens.orderDetail = (id) => {
   </div>`;
   const again = () => Screens.orderDetail(id);
   if ($('#advance')) $('#advance').onclick = () => advanceOrder(o, again);
-  app.querySelectorAll('[data-s]').forEach((b) => (b.onclick = () => { const s = b.dataset.s; if (s === o.status) return; if (s === 'delivered' && STATUS.indexOf(s) > idx) return advanceOrder(Object.assign(o, { status: 'ready' }), again); setStatus(o, s); again(); }));
+  app.querySelectorAll('[data-s]').forEach((b) => (b.onclick = () => { const s = b.dataset.s; if (s === o.status) return; if (s === 'delivered' && STATUS.indexOf(s) > idx) return advanceOrder(Object.assign(o, { status: 'ready' }), again); setStatus(o, s); if (s === 'preparing') return go(`#/order/${o.id}/prep`); again(); }));
   const paySheet = (prefill) => sheet(`<h2>تسجيل دفعة</h2><div class="bigopts" id="pmChips" style="grid-template-columns:1fr 1fr 1fr 1fr;margin-top:8px">${['cash', 'transfer', 'stcpay', 'other'].map((k) => `<div class="bigopt ${(o.paymentMethod || 'cash') === k ? 'on' : ''}" data-pm="${k}" style="padding:12px 4px 8px"><div class="ic" style="width:40px;height:40px">${ico(k === 'stcpay' ? 'phone' : k)}</div><div class="n" style="font-size:12px">${payMethodLabel(k)}</div></div>`).join('')}</div>
     <div style="height:12px"></div><label class="f"><span>المبلغ</span><input class="in big" id="amt" type="number" inputmode="decimal" value="${prefill || ''}" placeholder="${remaining}"></label><div style="height:16px"></div><button class="btn" id="payOk">حفظ</button>`,
     () => { let pm = o.paymentMethod || 'cash'; overlay.querySelectorAll('[data-pm]').forEach((b) => (b.onclick = () => { pm = b.dataset.pm; overlay.querySelectorAll('[data-pm]').forEach((x) => x.classList.toggle('on', x === b)); }));
@@ -579,10 +587,10 @@ const switchBtn = (on, attrs = '') => `<button class="switch ${on ? 'on' : ''}" 
 Screens.settings = () => {
   chrome('الإعدادات', { tab: 'settings' });
   const od = S.settings.onedrive;
-  const items = [['menu', 'roll', 'المنيو والأسعار', 'الأصناف، الصور، الأحجام، الأسعار'], ['addons', 'sauce', 'الإضافات', 'الصوصات والإضافات وأسعارها'], ['delivery', 'driver', 'طرق التوصيل', 'توصيلي، مندوب، بارسل… مع الصور'], ['messages', 'msg', 'رسائل', 'رسائل تظهر بعد كل توصيلة'],
+  const items = [['menu', 'roll', 'المنيو والأسعار', 'الأصناف، الصور، الأحجام، الأسعار'], ['addons', 'sauce', 'الإضافات', 'الصوصات والإضافات وأسعارها'], ['delivery', 'driver', 'طرق التوصيل', 'توصيلي، مندوب، بارسل… مع الصور'], ['messages', 'msg', 'رسائل', 'رسائل تظهر بعد كل توصيلة'], ['notify', 'bell', 'التنبيهات', notifyCfg().on ? `مفعّلة · ${notifyCfg().role === 'husband' ? 'جوال الزوج' : 'تذكير التحضير قبل ' + notifyCfg().leadMin + ' دقيقة'}` : 'تذكير بالطلبات في وقتها'],
     ['backup', 'cloud', 'النسخ الاحتياطي', od.connected ? `OneDrive متصل${od.lastBackup ? ' · آخر نسخة ' + fmtShort(od.lastBackup) + ' ' + fmtTime(od.lastBackup) : ''}` : 'تصدير واسترجاع، وربط OneDrive']];
   app.innerHTML = items.map(([k, ic, t, b]) => `<a class="srow" href="#/settings/${k}"><span class="ic">${ico(ic)}</span><div class="grow"><div class="strong">${t}</div><div class="small muted">${b}</div></div><span class="muted">‹</span></a>`).join('') +
-    `<div class="small faint" style="padding-top:24px">ورقة حُب · نسخة الويب 5 · البيانات محفوظة على هذا الجهاز فقط.</div>`;
+    `<div class="small faint" style="padding-top:24px">ورقة حُب · نسخة الويب 6 · البيانات محفوظة على هذا الجهاز فقط.</div>`;
 };
 
 Screens.menu = () => {
@@ -689,7 +697,7 @@ function markExported() { S.settings.lastExport = nowISO(); persist(false); }
 function importFromText(text) {
   const j = JSON.parse(text); const st = j.state || j;
   if (!st || !Array.isArray(st.orders) || !Array.isArray(st.menu)) throw new Error('bad file');
-  const keepGh = S && S.settings && S.settings.github; S = st; migrate(); if (keepGh && keepGh.token) S.settings.github = { ...S.settings.github, ...keepGh }; persist(false);
+  const keepGh = S && S.settings && S.settings.github; const keepN = S && S.settings && S.settings.notify; S = st; migrate(); if (keepGh && keepGh.token) S.settings.github = { ...S.settings.github, ...keepGh }; if (keepN) S.settings.notify = keepN; persist(false);
 }
 
 const OneDrive = {
@@ -1172,6 +1180,203 @@ Screens.recurring = () => {
   $('#rAdd').onclick = () => { const n = $('#rName').value.trim(), a = +$('#rAmt').value || 0; if (!n || a <= 0) return toast('اكتبي الاسم والمبلغ'); S.recurring.push({ id: uid(), name: n, amount: a, dayOfMonth: Math.min(28, Math.max(1, +$('#rDay').value || 1)), category: methodId ? 'توصيل' : 'اشتراك', methodId, active: true, lastBooked: null }); persist(); bookRecurring(); Screens.recurring(); };
 };
 
+// ---------- Order prep sheet (opens on "ابدئي التحضير") ----------
+Screens.orderPrep = (id) => {
+  const o = orderById(id);
+  if (!o) { go('#/orders'); return; }
+  chrome(`تحضير #${pad3(o.number)}`, { backBtn: true, parent: `#/order/${o.id}` });
+  const m = methodById(o.deliveryMethodId); const methodName = m ? m.name : o.fulfilment === 'pickup' ? 'استلام' : '';
+  const items = o.lines.filter((l) => l.kind === 'item'), addons = o.lines.filter((l) => l.kind === 'addon');
+  const done = new Set(o.prepDone || []);
+  const late = new Date(o.dueAt) < Date.now();
+  const ingRows = (acc) => Object.entries(acc).map(([iid, q]) => ({ ing: ingById(iid), q })).filter((x) => x.ing).sort((a, b) => a.ing.name.localeCompare(b.ing.name))
+    .map(({ ing, q }) => `<div class="row between" style="padding:3px 0"><span>${esc(ing.name)}</span><span class="${ing.qty < q ? 'red' : 'gold'} strong">${fmtQty(q, ing.unit)}</span></div>`).join('');
+  const all = orderConsumption(o);
+  app.innerHTML = `<div class="stack pad-sticky" style="gap:16px">
+    <div class="notes-card ${o.notes ? '' : 'none'}"><div class="h">${ico('msg')} ملاحظات العميل</div>${o.notes ? `<div class="t">${esc(o.notes).replace(/\n/g, '<br>')}</div>` : '<div class="small muted">لا توجد ملاحظات على هذا الطلب.</div>'}</div>
+    <div class="card stack" style="gap:4px">
+      <div class="row between"><span class="strong" style="font-size:17px">${esc(o.customerName) || 'بدون اسم'}</span><span class="${late ? 'red' : 'gold'} strong">${ico('clock')} ${relDay(o.dueAt)} ${fmtTime(o.dueAt)}</span></div>
+      <div class="small muted">${o.fulfilment === 'pickup' ? 'استلام' : 'توصيل'}${methodName ? ' · ' + esc(methodName) : ''}${o.address ? ' · ' + esc(o.address) : ''}</div>
+    </div>
+    <div><div class="section" style="padding-top:0"><h2>الأصناف</h2><span class="small muted">اضغطي على الصنف لرؤية مكوناته</span></div>
+      ${items.map((l, i) => { const acc = expand(l.itemId, l.variantName, l.qty, {}); const rows = ingRows(acc); const rk = encodeURIComponent(recipeKey(l.itemId, l.variantName));
+        return `<div class="prep-item ${done.has(i) ? 'done' : ''}" data-pi="${i}">
+          <div class="row"><button class="tick" data-tick="${i}" aria-label="تم">${ico('check')}</button>
+            <div class="grow"><div class="strong" style="font-size:17px">${esc(l.itemName)}${l.variantName ? ' — ' + esc(l.variantName) : ''}</div></div><span class="num gold" style="font-size:20px">× ${l.qty}</span><span class="chev">⌄</span></div>
+          <div class="ings">${rows || `<div class="small muted">لا توجد وصفة لهذا الصنف بعد. <a href="#/inventory/recipes/${rk}">أضيفي الوصفة</a></div>`}</div></div>`; }).join('')}
+    </div>
+    ${addons.length ? `<div class="card"><h3 style="margin-bottom:6px">الإضافات والصوصات</h3>${addons.map((l) => `<div class="row between" style="padding:3px 0"><span>${esc(l.itemName)}</span><span class="strong">× ${l.qty}</span></div>`).join('')}</div>` : ''}
+    ${S.perOrder.length ? `<div class="card"><h3 style="margin-bottom:6px">تغليف ولوازم لكل طلب</h3>${ingRows(S.perOrder.reduce((a, p) => { a[p.ingredientId] = (a[p.ingredientId] || 0) + p.qty; return a; }, {})) || '<div class="small muted">—</div>'}</div>` : ''}
+    ${Object.keys(all).length ? `<div class="card"><h3 style="margin-bottom:6px">مجموع المكونات لهذا الطلب</h3>${ingRows(all)}</div>` : ''}
+    <a class="small" href="#/inventory/prep" style="text-align:center">${ico('bowl')} ورقة التحضير لكل طلبات اليوم</a>
+  </div>
+  ${o.status === 'preparing' ? `<div class="sticky"><button class="btn" id="readyBtn" style="font-size:17px;padding:14px">جاهز للتوصيل</button></div>` : o.status === 'new' ? `<div class="sticky"><button class="btn goldline" id="startBtn" style="font-size:17px;padding:14px">ابدئي التحضير</button></div>` : ''}`;
+  tabsEl.style.display = 'none';
+  app.querySelectorAll('[data-pi]').forEach((el) => (el.onclick = (e) => { if (e.target.closest('[data-tick]') || e.target.closest('a')) return; el.classList.toggle('open'); }));
+  app.querySelectorAll('[data-tick]').forEach((b) => (b.onclick = () => { const i = +b.dataset.tick; const s = new Set(o.prepDone || []); s.has(i) ? s.delete(i) : s.add(i); o.prepDone = [...s]; persist(false); b.closest('.prep-item').classList.toggle('done', s.has(i)); }));
+  if ($('#readyBtn')) $('#readyBtn').onclick = () => { setStatus(o, 'ready'); go(`#/order/${o.id}`); };
+  if ($('#startBtn')) $('#startBtn').onclick = () => { setStatus(o, 'preparing'); Screens.orderPrep(id); };
+};
+
+// ---------- Notifications ----------
+// Every change re-plans the full list of upcoming notifications from the orders and sends it to the
+// notification server, which pushes each one at its exact time. Editing/deleting an order or changing
+// its status automatically moves or cancels its notifications.
+const NTYPES = [
+  ['prep', 'تذكير بدء التحضير', 'قبل موعد الطلب بالمدة المختارة', 'wife'],
+  ['late', 'طلب متأخر', 'بعد موعده بربع ساعة إذا لم يُسلَّم', 'wife'],
+  ['eve', 'طلبات بكرة', 'الساعة ٩ مساءً في الليلة السابقة', 'wife'],
+  ['morning', 'ملخص الصباح', 'الساعة ١٠ صباحاً في أيام الطلبات', 'wife'],
+  ['collect', 'تحصيل المبلغ', 'بعد يوم من توصيل طلب غير مدفوع', 'wife'],
+  ['recap', 'ملخص الشهر', 'أول كل شهر — لكِ ولزوجك', 'both'],
+  ['husband', 'توصيلات الزوج', 'عند جاهزية طلب "زوجي الغالي وصّلها" وقبل موعده بـ٤٥ دقيقة', 'husband'],
+  ['milestone', 'إنجازاتك', 'يصل زوجك تنبيه عند ١٠ و٥٠ و١٠٠ طلب', 'husband'],
+  ['backup', 'توقف النسخ الاحتياطي', 'يصل زوجك تنبيه إذا توقف النسخ ٣ أيام', 'husband'],
+];
+const MILESTONES = [10, 25, 50, 100, 150, 200, 300, 500, 1000];
+function notifyCfg() {
+  const n = (S.settings.notify = S.settings.notify || {});
+  if (!('server' in n)) Object.assign(n, { server: '', key: '', role: 'wife', on: false, leadMin: 90, lastSync: '', error: '' });
+  n.types = n.types || {}; NTYPES.forEach(([k]) => { if (!(k in n.types)) n.types[k] = true; });
+  return n;
+}
+const atLocal = (dayStr, h, min = 0) => { const [y, mo, d] = dayStr.split('-').map(Number); return new Date(y, mo - 1, d, h, min).getTime(); };
+const addDays = (dayStr, n) => { const [y, mo, d] = dayStr.split('-').map(Number); return dayISO(new Date(y, mo - 1, d + n, 12)); };
+const monthNameAr = (d) => d.toLocaleDateString(LATN, { month: 'long' });
+function monthStats(a, b) {
+  const R = [a, b];
+  const del = S.orders.filter((o) => o.status === 'delivered' && o.deliveredAt && inRange(o.deliveredAt, R));
+  const revenue = del.reduce((s, o) => s + o.total, 0);
+  const cogs = del.reduce((s, o) => s + (o.cogs || 0), 0);
+  const delivCost = del.reduce((s, o) => s + (o.deliveryCost || 0), 0);
+  const exps = S.expenses.filter((e) => inRange(e.at, R));
+  const subs = exps.filter((e) => e.recurringId && (e.category === 'توصيل' || e.methodId)).reduce((s, e) => s + e.amount, 0);
+  const other = exps.filter((e) => e.category !== 'مشتريات' && !(e.recurringId && (e.category === 'توصيل' || e.methodId))).reduce((s, e) => s + e.amount, 0);
+  const byI = {}; del.forEach((o) => o.lines.filter((l) => l.kind === 'item').forEach((l) => { byI[l.itemName] = (byI[l.itemName] || 0) + l.qty; }));
+  const top = Object.entries(byI).sort((x, y) => y[1] - x[1])[0];
+  const customers = new Set(del.map((o) => (o.customerPhone || o.customerName || '').trim()).filter(Boolean)).size;
+  return { n: del.length, revenue, profit: Math.round(revenue - cogs - delivCost - subs - other), top: top ? top[0] : '', customers };
+}
+function planJobs() {
+  const n = notifyCfg(), T = n.types, now = Date.now(), jobs = [];
+  const add = (type, k, at, to, t, b, u) => { if (T[type] && at > now - 60e3) jobs.push({ k, at, to, t, b, u }); };
+  const open = S.orders.filter((o) => o.status !== 'delivered' && o.dueAt);
+  const isHusband = (o) => (methodById(o.deliveryMethodId) || {}).kind === 'self_husband';
+  const noteMark = (o) => (o.notes ? ' · 📝 فيه ملاحظات' : '');
+  for (const o of open) {
+    const due = Date.parse(o.dueAt), num = pad3(o.number), who = o.customerName || 'بدون اسم';
+    if (o.status === 'new') add('prep', `prep:${o.id}:${o.dueAt}:${n.leadMin}`, due - n.leadMin * 60e3, 'wife', `ابدئي تحضير طلب #${num}`, `${who} · موعده ${fmtTime(o.dueAt)} · ${itemsSummary(o)}${noteMark(o)}`, `#/order/${o.id}/prep`);
+    add('late', `late:${o.id}:${o.dueAt}`, due + 15 * 60e3, 'wife', `طلب #${num} متأخر`, `${who} · كان موعده ${fmtTime(o.dueAt)} ولم يُسلَّم بعد`, `#/order/${o.id}`);
+    if (isHusband(o)) {
+      add('husband', `hdue:${o.id}:${o.dueAt}`, due - 45 * 60e3, 'husband', `توصيلة عليك الساعة ${fmtTime(o.dueAt)}`, `طلب #${num} · ${who}${o.address ? ' · ' + o.address : ''}`, o.mapsUrl || '#/today');
+      if (o.status === 'ready' && o.readyAt) add('husband', `hready:${o.id}:${o.readyAt}`, Math.max(Date.parse(o.readyAt), now - 30e3), 'husband', `طلب #${num} جاهز 🚗`, `${who} · موعده ${fmtTime(o.dueAt)}${o.address ? ' · ' + o.address : ''}`, o.mapsUrl || '#/today');
+    }
+  }
+  // Per-day notifications: the evening before and the morning of every day that has open orders.
+  const byDay = {}; open.forEach((o) => { (byDay[dayISO(o.dueAt)] = byDay[dayISO(o.dueAt)] || []).push(o); });
+  const unpaidAmt = S.orders.filter((o) => o.status === 'delivered' && o.paymentStatus !== 'paid').reduce((s, o) => s + Math.max(0, o.total - o.paidAmount), 0);
+  for (const [day, list] of Object.entries(byDay)) {
+    list.sort((a, b) => a.dueAt.localeCompare(b.dueAt));
+    const lines = list.slice(0, 4).map((o) => `#${pad3(o.number)} ${fmtTime(o.dueAt)} ${itemsSummary(o)}`).join(' — ');
+    const special = list.filter((o) => o.lines.some((l) => { const mi = S.menu.find((x) => x.id === l.itemId); return mi && mi.leadTimeDays > 0; }));
+    const notes = list.filter((o) => o.notes).length;
+    const cnt = list.length === 1 ? 'طلب واحد' : list.length === 2 ? 'طلبين' : `${list.length} طلبات`;
+    add('eve', `eve:${day}`, atLocal(addDays(day, -1), 21), 'wife', `بكرة عندك ${cnt}${special.length ? ' 🍰 منها ' + special.length + ' تحتاج تجهيز مسبق' : ''}`, lines + (list.length > 4 ? ' …' : ''), '#/inventory/prep');
+    add('morning', `morning:${day}`, atLocal(day, 10), 'wife', `صباح الخير — اليوم ${cnt}`, `أول طلب ${fmtTime(list[0].dueAt)}${notes ? ` · ${notes} فيها ملاحظات` : ''}${unpaidAmt ? ` · غير محصّل ${money(unpaidAmt)}` : ''}`, '#/today');
+  }
+  for (const o of S.orders.filter((x) => x.status === 'delivered' && x.paymentStatus !== 'paid' && x.deliveredAt)) {
+    add('collect', `collect:${o.id}`, Date.parse(o.deliveredAt) + 864e5, 'wife', `تذكير بتحصيل طلب #${pad3(o.number)}`, `${o.customerName || 'بدون اسم'} · متبقي ${money(Math.max(0, o.total - o.paidAmount))}`, `#/order/${o.id}`);
+  }
+  // Milestone: the husband hears about it the moment she delivers order #10, #50, #100…
+  const delivered = S.orders.filter((o) => o.status === 'delivered' && o.deliveredAt).sort((a, b) => a.deliveredAt.localeCompare(b.deliveredAt));
+  if (MILESTONES.includes(delivered.length)) { const last = delivered[delivered.length - 1]; if (Date.parse(last.deliveredAt) > now - 2 * 36e5) add('milestone', `ms:${delivered.length}`, Math.max(Date.parse(last.deliveredAt), now - 30e3), 'husband', `ورقة حُب وصلت الطلب رقم ${delivered.length} ❤`, 'لحظة تستاهل تهنئة منك.', '#/today'); }
+  // Monthly recap, 1st of the month at 10:00, for the month that just ended (kept up to date all month).
+  const d = new Date();
+  for (const back of [0, 1]) {
+    const a = new Date(d.getFullYear(), d.getMonth() - back, 1), b = new Date(d.getFullYear(), d.getMonth() - back + 1, 1);
+    const at = atLocal(dayISO(b), 10); if (at <= now) continue;
+    const st = monthStats(a, b); if (!st.n) continue;
+    add('recap', `recap:${monthKey(a)}`, at, 'both', `ملخص ${monthNameAr(a)} — ورقة حُب`, `${st.n} طلب · ${st.customers} عميل · إيراد ${money(st.revenue)} · صافي ${money(st.profit)}${st.top ? ` · الأكثر طلباً: ${st.top}` : ''}`, '#/finance');
+  }
+  return jobs.sort((x, y) => x.at - y.at);
+}
+const nServer = () => notifyCfg().server.trim().replace(/\/+$/, '');
+let notifyTimer = null;
+function scheduleNotifySync() { const n = notifyCfg(); if (!n.on || n.role !== 'wife' || !n.server || !n.key) return; clearTimeout(notifyTimer); notifyTimer = setTimeout(syncNotify, 1500); }
+async function syncNotify() {
+  const n = notifyCfg(); if (!n.on || n.role !== 'wife' || !n.server || !n.key || !navigator.onLine) return;
+  const gh = S.settings.github, od = S.settings.onedrive;
+  const lastBackup = [gh.connected && gh.lastBackup, od.connected && od.lastBackup].filter(Boolean).sort().pop() || '';
+  try {
+    const r = await fetch(`${nServer()}/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: n.key, jobs: planJobs(), health: { backupOn: !!(gh.connected || od.connected), lastBackup, error: (gh.connected && gh.error) || '' } }) });
+    if (!r.ok) throw new Error(r.status === 401 ? 'مفتاح الخادم غير صحيح' : 'خطأ ' + r.status);
+    n.lastSync = nowISO(); n.error = '';
+  } catch (e) { n.error = e.message || 'تعذر الاتصال بخادم التنبيهات'; }
+  persist(false);
+}
+function updateBadge() {
+  try { if (!('setAppBadge' in navigator)) return; const d = dayISO(); const c = S.orders.filter((o) => o.status !== 'delivered' && dayISO(o.dueAt) <= d).length; c ? navigator.setAppBadge(c) : navigator.clearAppBadge(); } catch (e) {}
+}
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const b64ToBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+async function enablePush() {
+  const n = notifyCfg();
+  if (!pushSupported()) throw new Error(isStandalone() ? 'هذا الجهاز لا يدعم التنبيهات (يلزم iOS 16.4 أو أحدث).' : 'افتحي التطبيق من أيقونته في الشاشة الرئيسية، ثم فعّلي التنبيهات من هناك.');
+  if (!n.server || !n.key) throw new Error('اكتبي رابط خادم التنبيهات والمفتاح أولاً.');
+  const perm = await Notification.requestPermission(); // must be the first await: iPhone only allows it straight from a tap
+  if (perm !== 'granted') throw new Error('لم يتم السماح بالتنبيهات. فعّليها من الإعدادات ← التنبيهات ← ورقة حُب.');
+  const { publicKey } = await (await fetch(`${nServer()}/vapid`)).json();
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (sub) { const cur = sub.options && sub.options.applicationServerKey; const same = cur && btoa(String.fromCharCode(...new Uint8Array(cur))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') === publicKey; if (!same) { await sub.unsubscribe(); sub = null; } }
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(publicKey) });
+  const r = await fetch(`${nServer()}/subscribe`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: n.key, role: n.role, sub: sub.toJSON() }) });
+  if (!r.ok) throw new Error(r.status === 401 ? 'مفتاح الخادم غير صحيح' : 'تعذر التسجيل في الخادم (' + r.status + ')');
+  n.on = true; n.error = ''; persist(false); await syncNotify();
+}
+async function disablePush() {
+  const n = notifyCfg();
+  try { const reg = await navigator.serviceWorker.ready; const sub = await reg.pushManager.getSubscription(); if (sub) { await fetch(`${nServer()}/unsubscribe`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: n.key, endpoint: sub.endpoint }) }).catch(() => {}); await sub.unsubscribe(); } } catch (e) {}
+  n.on = false; persist(false);
+}
+Screens.notify = () => {
+  chrome('التنبيهات', { backBtn: true, parent: '#/settings' });
+  const n = notifyCfg();
+  const jobs = n.role === 'wife' ? planJobs().filter((j) => j.at > Date.now()) : [];
+  const leadOpts = [30, 60, 90, 120, 180];
+  const leadLabel = (m) => (m < 60 ? `${m} دقيقة` : m === 60 ? 'ساعة' : m === 120 ? 'ساعتين' : m === 90 ? 'ساعة ونص' : `${m / 60} ساعات`);
+  const typeRow = ([k, t, b]) => `<div class="item"><div class="grow"><div class="strong">${t}</div><div class="small muted">${b}</div></div>${switchBtn(n.types[k], `data-nt="${k}"`)}</div>`;
+  app.innerHTML = `<div class="stack pad-sticky" style="gap:16px">
+    ${n.error ? `<div class="banner err">${esc(n.error)}</div>` : ''}
+    <div class="card stack" style="gap:10px">
+      <div class="row between"><span class="strong">${ico('bell')} ${n.on ? 'التنبيهات مفعّلة على هذا الجوال' : 'التنبيهات غير مفعّلة'}</span>${n.on ? '<span class="ok strong">✓</span>' : ''}</div>
+      ${n.on ? `<div class="row"><button class="btn goldline sm" id="nTest">إرسال تنبيه تجريبي</button><button class="btn ghost sm" id="nOff">إيقاف</button></div>` : `<button class="btn" id="nOn">تفعيل التنبيهات</button>`}
+      ${!isStandalone() ? '<div class="small red">افتحي التطبيق من أيقونته في الشاشة الرئيسية لتعمل التنبيهات.</div>' : ''}
+      ${n.lastSync && n.role === 'wife' ? `<div class="small faint">آخر مزامنة ${fmtShort(n.lastSync)} ${fmtTime(n.lastSync)}</div>` : ''}
+    </div>
+    <div><span class="small strong muted">هذا الجوال</span><div class="chips" style="margin-top:6px">${[['wife', 'جوال صاحبة ورقة حُب'], ['husband', 'جوال الزوج']].map(([k, l]) => `<button class="chip ${n.role === k ? 'on' : ''}" data-role="${k}">${l}</button>`).join('')}</div>
+      ${n.role === 'husband' ? '<div class="small muted" style="margin-top:6px">هذا الجوال يستقبل تنبيهات الزوج فقط، ولا يرسل أي بيانات. التحكم بأنواع التنبيهات من جوالها.</div>' : ''}</div>
+    ${n.role === 'wife' ? `
+    <div><h3>متى يصلك تذكير بدء التحضير؟</h3><div class="chips" style="margin-top:6px">${leadOpts.map((m) => `<button class="chip ${n.leadMin === m ? 'on' : ''}" data-lead="${m}">قبل ${leadLabel(m)}</button>`).join('')}</div></div>
+    <div class="card"><h3 style="margin-bottom:4px">لكِ</h3>${NTYPES.filter((x) => x[3] !== 'husband').map(typeRow).join('')}</div>
+    <div class="card"><h3 style="margin-bottom:4px">لزوجك</h3>${NTYPES.filter((x) => x[3] === 'husband').map(typeRow).join('')}</div>
+    <div class="card"><h3 style="margin-bottom:6px">التنبيهات القادمة</h3>${jobs.slice(0, 12).map((j) => `<div class="row between" style="padding:4px 0;align-items:flex-start;gap:10px"><div class="grow"><div class="small strong">${esc(j.t)}</div><div class="small muted ellip">${esc(j.b)}</div></div><div class="small gold" style="white-space:nowrap">${relDay(new Date(j.at).toISOString())} ${fmtTime(new Date(j.at).toISOString())}${j.to !== 'wife' ? `<div class="faint">${j.to === 'husband' ? 'للزوج' : 'لكما'}</div>` : ''}</div></div>`).join('') || '<div class="small muted">لا يوجد تنبيهات قادمة. تُجدول تلقائياً مع كل طلب جديد.</div>'}${jobs.length > 12 ? `<div class="small faint">و${jobs.length - 12} غيرها…</div>` : ''}</div>` : ''}
+    <details class="card"><summary class="small strong muted">إعداد الخادم</summary><div class="stack" style="gap:10px;margin-top:10px">
+      <label class="f"><span>رابط خادم التنبيهات</span><input class="in" id="nServer" dir="ltr" placeholder="https://waraqat-hob-notify.xxx.workers.dev" value="${esc(n.server)}"></label>
+      <label class="f"><span>المفتاح</span><input class="in" id="nKey" dir="ltr" value="${esc(n.key)}"></label></div></details>
+  </div>`;
+  const busy = (b, fn) => async () => { b.disabled = true; try { await fn(); } catch (e) { n.error = e.message; persist(false); } Screens.notify(); };
+  if ($('#nOn')) $('#nOn').onclick = busy($('#nOn'), enablePush);
+  if ($('#nOff')) $('#nOff').onclick = busy($('#nOff'), disablePush);
+  if ($('#nTest')) $('#nTest').onclick = busy($('#nTest'), async () => { const r = await fetch(`${nServer()}/test`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: n.key, role: n.role }) }); const j = await r.json(); if (!r.ok) throw new Error(j.error || 'خطأ'); n.error = ''; toast(j.delivered ? 'أُرسل ✓' : 'لم يصل لأي جهاز — أعيدي التفعيل'); });
+  app.querySelectorAll('[data-role]').forEach((b) => (b.onclick = async () => { if (n.role === b.dataset.role) return; if (n.on) await disablePush(); n.role = b.dataset.role; persist(false); Screens.notify(); }));
+  app.querySelectorAll('[data-lead]').forEach((b) => (b.onclick = () => { n.leadMin = +b.dataset.lead; persist(false); syncNotify(); Screens.notify(); }));
+  app.querySelectorAll('[data-nt]').forEach((b) => (b.onclick = () => { n.types[b.dataset.nt] = !n.types[b.dataset.nt]; persist(false); syncNotify(); Screens.notify(); }));
+  const saveSrv = () => { n.server = $('#nServer').value.trim(); n.key = $('#nKey').value.trim(); persist(false); };
+  $('#nServer').onchange = saveSrv; $('#nKey').onchange = saveSrv;
+};
+
 // ---------- Boot ----------
 (async function boot() {
   load(); bookRecurring();
@@ -1181,7 +1386,9 @@ Screens.recurring = () => {
     OneDrive.token().then(() => OneDrive.backup()).catch(() => { S.settings.onedrive.needsLogin = true; persist(false); if (location.hash === '#/today' || !location.hash) route(); });
   }
   if (S.settings.github.connected && (!S.settings.github.lastBackup || S.settings.github.lastBackup < S.lastChange)) GitHub.backup().catch(() => {}).then(() => { if (!location.hash || location.hash === '#/today') route(); });
-  window.addEventListener('online', () => { if (S.settings.github.connected) GitHub.backup().catch(() => {}); });
+  window.addEventListener('online', () => { if (S.settings.github.connected) GitHub.backup().catch(() => {}); syncNotify(); });
+  notifyCfg(); updateBadge(); syncNotify();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', (e) => { if (e.data && e.data.go) location.hash = e.data.go; });
   route();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
