@@ -82,8 +82,7 @@ function oneTimeFixes() {
   if (!S.fixes.ownerLoan) {
     if (!Array.isArray(S.capital)) S.capital = [];
     S.capital.push({ id: uid(), at: '2026-08-20T08:00:00.000Z', amount: 2300, kind: 'loan', note: 'تمويل من صاحبة المشروع لبدء ورقة حُب' });
-    S.expenses.push({ id: uid(), at: '2026-08-26T09:00:00.000Z', amount: 611.5, category: 'أخرى', note: 'مصاريف تأسيس غير مسجلة (من تمويل 2,300 ناقص 1,688.50 المسجل قبل الإطلاق)' });
-    S.expenses.push({ id: uid(), at: '2026-09-30T09:00:00.000Z', amount: 339, category: 'أخرى', note: 'خضار ومشتريات صغيرة غير مسجلة (الفرق مع رصيد الحساب)' });
+    S.expenses.push({ id: uid(), at: '2026-08-26T09:00:00.000Z', amount: 450.5, category: 'أخرى', note: 'مصاريف تأسيس غير مسجلة (تسوية مع رصيد الحساب بعد تسجيل الإعلانات)' });
     S.fixes.ownerLoan = nowISO();
   }
   if (!S.fixes.hideEdamame) {
