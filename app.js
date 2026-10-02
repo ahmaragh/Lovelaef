@@ -61,11 +61,35 @@ function freshState() {
 
 function load() {
   try { const raw = localStorage.getItem(KEY); if (raw) { S = JSON.parse(raw); migrate(); return; } } catch (e) { console.error(e); }
-  S = freshState(); persist(false);
+  S = freshState(); migrate(); persist(false);
+}
+// Fixes Abdulghani asked for (Oct 2026). Each runs once, then is flagged in S.fixes.
+function oneTimeFixes() {
+  S.fixes = S.fixes || {};
+  if (!S.fixes.mergeCrab) {
+    const keep = S.ingredients.find((i) => i.name === 'كراب'), dup = S.ingredients.find((i) => i.name === 'سردين مقشر');
+    const f = !keep || !dup ? null : keep.unit === dup.unit ? 1 : (dup.unit === 'g' && keep.unit === 'kg') || (dup.unit === 'ml' && keep.unit === 'l') ? 0.001 : (dup.unit === 'kg' && keep.unit === 'g') || (dup.unit === 'l' && keep.unit === 'ml') ? 1000 : null;
+    if (f != null) {
+      keep.qty += dup.qty * f;
+      S.moves.forEach((m) => { if (m.ingredientId === dup.id) { m.ingredientId = keep.id; m.qty *= f; } });
+      S.recipes.forEach((r) => { r.lines.forEach((l) => { if (l.ingredientId === dup.id) { l.ingredientId = keep.id; l.qty *= f; } }); });
+      S.perOrder.forEach((x) => { if (x.ingredientId === dup.id) { x.ingredientId = keep.id; x.qty *= f; } });
+      S.expenses.forEach((e) => { if (e.ingredientId === dup.id) e.ingredientId = keep.id; });
+      S.ingredients = S.ingredients.filter((i) => i.id !== dup.id);
+      S.fixes.mergeCrab = nowISO();
+    }
+  }
+  if (!S.fixes.hideEdamame) {
+    const dup = S.menu.find((m) => m.name === 'ادمامي'), keep = S.menu.find((m) => m.name === 'ادمامي كوب');
+    if (dup && keep && !S.orders.some((o) => o.lines.some((l) => l.itemId === dup.id))) { dup.active = false; S.fixes.hideEdamame = nowISO(); }
+  }
 }
 function migrate() { if (!S.settings) S.settings = {}; if (!S.settings.onedrive) S.settings.onedrive = { clientId: '', connected: false, account: '', lastBackup: '' }; S.menu.forEach((m) => { if (!('photo' in m)) m.photo = ''; });
   S.methods.forEach((m) => { if (!('photo' in m)) m.photo = ''; if (m.name === 'بارسل') m.name = 'مرسول'; if (!m.photo && typeof PRESET_PHOTOS !== 'undefined' && PRESET_PHOTOS[m.kind] && (m.kind !== 'courier' || m.name === 'مرسول')) m.photo = PRESET_PHOTOS[m.kind]; });
   ['ingredients', 'recipes', 'perOrder', 'moves', 'expenses', 'recurring'].forEach((k) => { if (!Array.isArray(S[k])) S[k] = []; });
+  if (!Array.isArray(S.gifts)) { S.gifts = [['بوريتو روبيان'], ['كوب سوشي روبيان'], ['شيتوس رول (دجاج)']].map(([n], i) => { const m = S.menu.find((x) => x.name === n); return { id: uid(), name: n, menuItemId: m ? m.id : null, active: true, sort: i }; }); }
+  if (!Array.isArray(S.counts)) S.counts = []; if (!('countDraft' in S)) S.countDraft = null;
+  oneTimeFixes();
   if (!S.settings.github) S.settings.github = { repo: '', token: '', connected: false, lastBackup: '', error: '', sha: '', lastDaily: '' }; if (!('lastExport' in S.settings)) S.settings.lastExport = ''; if (!('lastChange' in S)) S.lastChange = ''; }
 let backupTimer = null;
 function persist(triggerBackup = true) {
@@ -102,7 +126,7 @@ function confirmationText(o) {
   const items = o.lines.filter((l) => l.kind === 'item').map((l) => `• ${l.itemName}${l.variantName ? ` (${l.variantName})` : ''} × ${l.qty}`);
   const addons = o.lines.filter((l) => l.kind === 'addon' && l.unitPrice > 0).map((l) => `• ${l.itemName} × ${l.qty}`);
   return [
-    `${S.businessName} 🍣`, `تم تأكيد طلبك رقم #${pad3(o.number)}`, '', ...items, ...(addons.length ? ['إضافات:', ...addons] : []), '',
+    `${S.businessName} 🍣`, `تم تأكيد طلبك رقم #${pad3(o.number)}`, '', ...items, ...(addons.length ? ['إضافات:', ...addons] : []), ...(giftLines(o).length ? ['هدية من ورقة حُب 🎁', ...giftLines(o).map((l) => `• ${l.itemName}${l.qty > 1 ? ' × ' + l.qty : ''}`)] : []), '',
     o.deliveryCharge > 0 ? `التوصيل: ${money(o.deliveryCharge)}` : null, o.discount > 0 ? `الخصم: ${money(o.discount)}` : null, `الإجمالي: ${money(o.total)}`, '',
     `${o.fulfilment === 'pickup' ? 'الاستلام' : 'التوصيل'}: ${relDay(o.dueAt)} ${fmtTime(o.dueAt)}`, o.paymentStatus === 'paid' ? 'الدفع: تم ✅' : null, '', 'شكراً لاختيارك ورقة حُب ❤️',
   ].filter((x) => x !== null).join('\n');
@@ -143,6 +167,7 @@ const I = {
   pin: '<path d="M12 22s7-7 7-12a7 7 0 0 0-14 0c0 5 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   edit: '<path d="M4 20h4l11-11-4-4L4 16z"/>',
+  gift: '<rect x="3" y="9" width="18" height="12" rx="1.5"/><path d="M3 13h18M12 9v12"/><path d="M12 9C10 5 6 5 6.5 7.5S12 9 12 9zM12 9c2-4 6-4 5.5-1.5S12 9 12 9z"/>',
   bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
 };
@@ -236,6 +261,10 @@ function route() {
   if (p[0] === 'settings' && p[1] === 'messages') return Screens.messages();
   if (p[0] === 'settings' && p[1] === 'backup') return Screens.backup();
   if (p[0] === 'settings' && p[1] === 'notify') return Screens.notify();
+  if (p[0] === 'settings' && p[1] === 'gifts') return Screens.gifts();
+  if (p[0] === 'settings' && p[1] === 'count' && p[2] === 'history') return Screens.countHistory();
+  if (p[0] === 'settings' && p[1] === 'count' && p[2]) return Screens.countReport(p[2]);
+  if (p[0] === 'settings' && p[1] === 'count') return Screens.stockCount();
   if (p[0] === 'settings') return Screens.settings();
   return Screens.today();
 }
@@ -345,7 +374,7 @@ Screens.orders = () => {
   if (F.quick === 'unpaid') list = list.filter((o) => o.paymentStatus !== 'paid');
   if (F.methodId) list = list.filter((o) => o.deliveryMethodId === F.methodId);
   if (F.q) { const q = F.q.toLowerCase(); list = list.filter((o) => (o.customerName || '').toLowerCase().includes(q) || (o.customerPhone || '').includes(q) || String(o.number).includes(q)); }
-  list.sort((a, b) => (a.status === 'delivered') - (b.status === 'delivered') || (F.quick === 'delivered' ? b.dueAt.localeCompare(a.dueAt) : a.dueAt.localeCompare(b.dueAt)));
+  list.sort((a, b) => (a.status === 'delivered') - (b.status === 'delivered') || (a.status === 'delivered' ? b.dueAt.localeCompare(a.dueAt) : a.dueAt.localeCompare(b.dueAt)));
   const quicks = [['open', 'مفتوحة'], ['unpaid', 'غير مدفوعة'], ['delivered', 'تم توصيلها'], ['all', 'الكل']];
   app.innerHTML = `<div class="stack pad-sticky tabbed">
     <input class="in" id="q" placeholder="بحث بالاسم أو الجوال أو الرقم" value="${esc(F.q)}">
@@ -379,7 +408,7 @@ Screens.orderForm = (editId) => {
   WIZ.at = Date.now();
   const D = WIZ.D;
   const qtyOf = (k) => (D.lines.find((l) => lineKey(l) === k) || {}).qty || 0;
-  const setQty = (c, q) => { D.lines = D.lines.filter((l) => lineKey(l) !== c.key); if (q > 0) D.lines.push({ itemId: c.itemId, itemName: c.itemName, variantName: c.variantName, unitPrice: c.unitPrice, qty: q, kind: c.kind || 'item' }); };
+  const setQty = (c, q) => { D.lines = D.lines.filter((l) => lineKey(l) !== c.key); if (q > 0) D.lines.push({ itemId: c.itemId, itemName: c.itemName, variantName: c.variantName, unitPrice: c.unitPrice, qty: q, kind: c.kind || 'item', ...(c.giftId ? { giftId: c.giftId } : {}) }); };
   const itemCount = () => D.lines.filter((l) => l.kind === 'item').reduce((s, l) => s + l.qty, 0);
 
   const render = () => {
@@ -434,8 +463,9 @@ Screens.orderForm = (editId) => {
     const body = $('#stepBody');
     const draw = () => {
       body.innerHTML = `<div class="rounds">${S.addons.filter((a) => a.active).map((a) => { const k = `addon:${a.id}:`; const q = qtyOf(k); return `<div class="round ${q ? 'on' : ''}" data-a="${a.id}"><div class="c">${ico('sauce')}</div><div class="n">${esc(a.name)}</div><div class="p">${a.price ? money(a.price) : 'مجاناً'}</div>${q ? `<span class="badge">${q}</span>` : ''}</div>`; }).join('')}</div>
-        <div class="small muted center" style="margin-top:10px">اضغطي للإضافة · اضغطي مطولاً للإنقاص</div>`;
-      body.querySelectorAll('.round').forEach((r) => { const a = S.addons.find((x) => x.id === r.dataset.a); const c = { key: `addon:${a.id}:`, itemId: a.id, itemName: a.name, variantName: null, unitPrice: a.price, kind: 'addon' };
+        <div class="small muted center" style="margin-top:10px">اضغطي للإضافة · اضغطي مطولاً للإنقاص</div>
+        ${(S.gifts || []).some((g) => g.active) ? `<div class="section" style="padding-top:22px"><h2>${ico('gift')} هدية مع الطلب</h2><a class="small" href="#/settings/gifts">تعديل الهدايا</a></div><div class="rounds">${S.gifts.filter((g) => g.active).map((g) => { const q = qtyOf(`gift:${g.menuItemId || g.id}:`); return `<div class="round gift ${q ? 'on' : ''}" data-g="${g.id}"><div class="c">${ico('gift')}</div><div class="n">${esc(g.name)}</div><div class="p">هدية</div>${q ? `<span class="badge">${q}</span>` : ''}</div>`; }).join('')}</div>` : ''}`;
+      body.querySelectorAll('.round').forEach((r) => { let c; if (r.dataset.g) { const g = giftById(r.dataset.g); c = { key: `gift:${g.menuItemId || g.id}:`, itemId: g.menuItemId || g.id, itemName: g.name, variantName: null, unitPrice: 0, kind: 'gift', giftId: g.id }; } else { const a = S.addons.find((x) => x.id === r.dataset.a); c = { key: `addon:${a.id}:`, itemId: a.id, itemName: a.name, variantName: null, unitPrice: a.price, kind: 'addon' }; }
         let timer, held = false;
         const start = () => { held = false; timer = setTimeout(() => { held = true; setQty(c, Math.max(0, qtyOf(c.key) - 1)); draw(); refreshBar(); }, 450); };
         const end = () => { clearTimeout(timer); };
@@ -504,6 +534,7 @@ Screens.orderForm = (editId) => {
       <div class="divider"></div>
       ${items.map((l) => `<div class="line"><span>${esc(l.itemName)}${l.variantName ? ' — ' + esc(l.variantName) : ''} <span class="muted">× ${l.qty}</span></span><span>${money(l.unitPrice * l.qty)}</span></div>`).join('')}
       ${addons.map((l) => `<div class="line small muted"><span>+ ${esc(l.itemName)} × ${l.qty}</span><span>${l.unitPrice ? money(l.unitPrice * l.qty) : 'مجاناً'}</span></div>`).join('')}
+      ${giftLines(D).map((l) => `<div class="line small gold"><span>${ico('gift')} ${esc(l.itemName)} × ${l.qty}</span><span>هدية</span></div>`).join('')}
       ${D.deliveryCharge ? `<div class="line muted"><span>التوصيل</span><span>${money(D.deliveryCharge)}</span></div>` : ''}
       ${D.discount ? `<div class="line muted"><span>الخصم</span><span>− ${money(D.discount)}</span></div>` : ''}
       <div class="line tot"><span class="strong">الإجمالي</span><span class="num gold">${money(total)}</span></div>
@@ -555,6 +586,7 @@ Screens.orderDetail = (id) => {
     <div class="receipt"><span class="seal sm" style="top:-12px">#${pad3(o.number)}</span><div style="height:6px"></div>
       ${items.map((l) => `<div class="line"><span>${esc(l.itemName)}${l.variantName ? ' — ' + esc(l.variantName) : ''} <span class="muted">× ${l.qty}</span></span><span class="muted">${money(l.unitPrice * l.qty)}</span></div>`).join('')}
       ${addons.map((l) => `<div class="line small muted"><span>+ ${esc(l.itemName)} × ${l.qty}</span><span>${l.unitPrice ? money(l.unitPrice * l.qty) : 'مجاناً'}</span></div>`).join('')}
+      ${giftLines(o).map((l) => `<div class="line small gold"><span>${ico('gift')} ${esc(l.itemName)} × ${l.qty}</span><span>هدية</span></div>`).join('')}
       ${o.deliveryCharge ? `<div class="line muted"><span>التوصيل</span><span>${money(o.deliveryCharge)}</span></div>` : ''}
       ${o.discount ? `<div class="line muted"><span>الخصم</span><span>− ${money(o.discount)}</span></div>` : ''}
       <div class="line tot"><span class="strong">الإجمالي</span><span class="num gold">${money(o.total)}</span></div>
@@ -587,10 +619,10 @@ const switchBtn = (on, attrs = '') => `<button class="switch ${on ? 'on' : ''}" 
 Screens.settings = () => {
   chrome('الإعدادات', { tab: 'settings' });
   const od = S.settings.onedrive;
-  const items = [['menu', 'roll', 'المنيو والأسعار', 'الأصناف، الصور، الأحجام، الأسعار'], ['addons', 'sauce', 'الإضافات', 'الصوصات والإضافات وأسعارها'], ['delivery', 'driver', 'طرق التوصيل', 'توصيلي، مندوب، بارسل… مع الصور'], ['messages', 'msg', 'رسائل', 'رسائل تظهر بعد كل توصيلة'], ['notify', 'bell', 'التنبيهات', notifyCfg().on ? `مفعّلة · ${notifyCfg().role === 'husband' ? 'جوال الزوج' : 'تذكير التحضير قبل ' + notifyCfg().leadMin + ' دقيقة'}` : 'تذكير بالطلبات في وقتها'],
+  const items = [['menu', 'roll', 'المنيو والأسعار', 'الأصناف، الصور، الأحجام، الأسعار'], ['addons', 'sauce', 'الإضافات', 'الصوصات والإضافات وأسعارها'], ['delivery', 'driver', 'طرق التوصيل', 'توصيلي، مندوب، بارسل… مع الصور'], ['messages', 'msg', 'رسائل', 'رسائل تظهر بعد كل توصيلة'], ['gifts', 'gift', 'الهدايا', `${(S.gifts || []).filter((g) => g.active).length} هدية · تختارينها مع الطلب`], ['count', 'box', 'جرد المخزون', S.countDraft ? `جرد مفتوح · تم ${Object.keys(S.countDraft.v).length}` : (S.counts && S.counts.length ? 'آخر جرد ' + fmtShort(S.counts[S.counts.length - 1].at) : 'عدّي المخزون وصححي الكميات')], ['notify', 'bell', 'التنبيهات', notifyCfg().on ? `مفعّلة · ${notifyCfg().role === 'husband' ? 'جوال الزوج' : 'تذكير التحضير قبل ' + notifyCfg().leadMin + ' دقيقة'}` : 'تذكير بالطلبات في وقتها'],
     ['backup', 'cloud', 'النسخ الاحتياطي', od.connected ? `OneDrive متصل${od.lastBackup ? ' · آخر نسخة ' + fmtShort(od.lastBackup) + ' ' + fmtTime(od.lastBackup) : ''}` : 'تصدير واسترجاع، وربط OneDrive']];
   app.innerHTML = items.map(([k, ic, t, b]) => `<a class="srow" href="#/settings/${k}"><span class="ic">${ico(ic)}</span><div class="grow"><div class="strong">${t}</div><div class="small muted">${b}</div></div><span class="muted">‹</span></a>`).join('') +
-    `<div class="small faint" style="padding-top:24px">ورقة حُب · نسخة الويب 6 · البيانات محفوظة على هذا الجهاز فقط.</div>`;
+    `<div class="small faint" style="padding-top:24px">ورقة حُب · نسخة الويب 7 · البيانات محفوظة على هذا الجهاز فقط.</div>`;
 };
 
 Screens.menu = () => {
@@ -935,7 +967,7 @@ function expand(itemId, variantName, qty, acc, depth = 0) {
 }
 function orderConsumption(o) {
   const acc = {};
-  o.lines.filter((l) => l.kind === 'item').forEach((l) => expand(l.itemId, l.variantName, l.qty, acc));
+  o.lines.filter((l) => l.kind === 'item' || l.kind === 'gift').forEach((l) => expand(l.itemId, l.variantName, l.qty, acc));
   S.perOrder.forEach((p) => { acc[p.ingredientId] = (acc[p.ingredientId] || 0) + p.qty; });
   return acc;
 }
@@ -952,10 +984,11 @@ function revertStock(o) {
   S.moves = S.moves.filter((m) => !(m.orderId === o.id && m.reason === 'order'));
   o.stockApplied = false; o.cogs = 0;
 }
-function restock(ing, qty, totalCost) {
+function restock(ing, qty, totalCost, at) {
+  at = at || nowISO();
   ing.qty += qty; if (totalCost > 0 && qty > 0) ing.unitCost = totalCost / qty;
-  S.moves.push({ id: uid(), at: nowISO(), ingredientId: ing.id, qty, cost: totalCost || 0, reason: 'restock' });
-  if (totalCost > 0) S.expenses.push({ id: uid(), at: nowISO(), amount: totalCost, category: 'مشتريات', note: `${ing.name} — ${fmtQty(qty, ing.unit)}`, ingredientId: ing.id });
+  S.moves.push({ id: uid(), at, ingredientId: ing.id, qty, cost: totalCost || 0, reason: 'restock' });
+  if (totalCost > 0) S.expenses.push({ id: uid(), at, amount: totalCost, category: 'مشتريات', note: `${ing.name} — ${fmtQty(qty, ing.unit)}`, ingredientId: ing.id });
   persist();
 }
 function markFinished(ing) {
@@ -978,6 +1011,7 @@ Screens.inventory = () => {
   const groups = [['ingredient', 'المكونات'], ['packaging', 'التغليف']];
   app.innerHTML = `<div class="stack pad-sticky tabbed" style="gap:14px">
     <div class="row"><a class="btn goldline grow" href="#/inventory/prep">${ico('bowl')} ورقة التحضير</a><a class="btn ghost grow" href="#/inventory/recipes">${ico('roll')} الوصفات</a><a class="btn ghost" href="#/inventory/perorder" style="width:auto;padding:12px 14px">${ico('bigbox')}</a></div>
+    <a class="btn ghost" href="#/settings/count">${ico('box')} جرد المخزون${S.countDraft ? ' (مفتوح)' : ''}</a>
     ${S.ingredients.length ? groups.map(([k, l]) => { const list = S.ingredients.filter((i) => (i.kind || 'ingredient') === k); return list.length ? `<h3>${l}</h3>${list.map((i) => { const low = i.lowAt > 0 && i.qty <= i.lowAt; return `<div class="orow" style="cursor:default">
       <a href="#/inventory/${i.id}" class="grow" style="text-decoration:none;color:inherit"><div class="row between"><span class="strong">${esc(i.name)}</span><span class="${low ? 'red strong' : 'gold strong'}">${fmtQty(i.qty, i.unit)}</span></div>
       <div class="small muted">${i.unitCost ? `${(i.unitCost).toFixed(2)} ريال/${unitLabel(i.unit)}` : 'بدون تكلفة بعد'}${i.lowAt ? ` · تنبيه عند ${fmtQty(i.lowAt, i.unit)}` : ''}${i.avgPerOrder != null ? ` · فعلي ${i.avgPerOrder}/طلب` : ''}</div></a>
@@ -990,7 +1024,8 @@ Screens.inventory = () => {
 function restockSheet(ing, after) {
   sheet(`<h2>شراء ${esc(ing.name)}</h2><p class="small muted">الموجود الآن ${fmtQty(ing.qty, ing.unit)}. اكتبي الكمية المشتراة وسعرها الإجمالي — التكلفة لكل ${unitLabel(ing.unit)} تُحسب تلقائياً.</p>
     <div class="row"><label class="f grow"><span>الكمية (${unitLabel(ing.unit)})</span><input class="in big" id="rsQ" type="number" inputmode="decimal" placeholder="0"></label><label class="f grow"><span>السعر الإجمالي (ريال)</span><input class="in big" id="rsC" type="number" inputmode="decimal" placeholder="0"></label></div>
-    <div style="height:14px"></div><button class="btn" id="rsOk">إضافة للمخزون</button>`, () => { $('#rsQ').focus(); $('#rsOk').onclick = () => { const q = +$('#rsQ').value || 0; if (q <= 0) return toast('اكتبي الكمية'); restock(ing, q, +$('#rsC').value || 0); closeSheet(); after(); toast('تمت الإضافة'); }; });
+    <label class="f" style="margin-top:10px"><span>تاريخ الشراء</span><input class="in" id="rsD" type="date" value="${dayISO()}"></label>
+    <div style="height:14px"></div><button class="btn" id="rsOk">إضافة للمخزون</button>`, () => { $('#rsQ').focus(); $('#rsOk').onclick = () => { const q = +$('#rsQ').value || 0; if (q <= 0) return toast('اكتبي الكمية'); const dv = $('#rsD').value; restock(ing, q, +$('#rsC').value || 0, dv && dv !== dayISO() ? new Date(dv + 'T12:00').toISOString() : nowISO()); closeSheet(); after(); toast('تمت الإضافة'); }; });
 }
 Screens.ingredient = (id) => {
   let ex = id === 'new' ? null : ingById(id);
@@ -1107,10 +1142,10 @@ Screens.finance = () => {
   chrome('المالية', { tab: 'finance' });
   bookRecurring();
   const R = periodRange(FIN_P);
-  const del = S.orders.filter((o) => o.status === 'delivered' && o.deliveredAt && inRange(o.deliveredAt, R));
+  const del = S.orders.filter((o) => o.status === 'delivered' && inRange(o.dueAt, R));
   const revenue = del.reduce((s, o) => s + o.total, 0);
   const deliveryCharges = del.reduce((s, o) => s + (o.deliveryCharge || 0), 0);
-  const collected = S.orders.filter((o) => o.status === 'delivered' && o.deliveredAt && inRange(o.deliveredAt, R)).reduce((s, o) => s + o.paidAmount, 0);
+  const collected = S.orders.filter((o) => o.status === 'delivered' && inRange(o.dueAt, R)).reduce((s, o) => s + o.paidAmount, 0);
   const outstanding = S.orders.filter((o) => o.paymentStatus !== 'paid').reduce((s, o) => s + Math.max(0, o.total - o.paidAmount), 0);
   const cogs = del.reduce((s, o) => s + (o.cogs || 0), 0);
   const delivCost = del.reduce((s, o) => s + (o.deliveryCost || 0), 0);
@@ -1145,13 +1180,15 @@ Screens.finance = () => {
     <div class="card"><h3 style="margin-bottom:6px">حسب طريقة التوصيل</h3>${Object.entries(byM).map(([k, v]) => { const m = methodById(k); return `<div class="row between" style="padding:3px 0"><span>${m ? esc(m.name) : 'استلام'} <span class="small muted">× ${v.n}</span></span><span class="small"><span class="muted">حُصّل ${money(v.charge)}</span> · <span class="${v.cost > v.charge ? 'red' : ''}">دُفع ${money(v.cost)}</span></span></div>`; }).join('') || '<div class="muted small">لا طلبات موصّلة في الفترة.</div>'}</div>
     <div class="card"><h3 style="margin-bottom:6px">هامش كل صنف</h3>${items.map(([k, v]) => `<div class="row between" style="padding:3px 0"><span>${esc(k)} <span class="small muted">× ${v.q}</span></span><span class="small">${money(v.rev)}${v.cost ? ` · <span class="${v.rev - v.cost > 0 ? 'ok' : 'red'}">${pct(v.rev - v.cost, v.rev)}%</span>` : ''}</span></div>`).join('') || '<div class="muted small">—</div>'}
       ${items.length && !items.some(([, v]) => v.cost) ? '<div class="small muted" style="margin-top:6px">أضيفي الوصفات وأسعار الشراء ليظهر الهامش.</div>' : ''}</div>
+    ${(() => { const gl = del.flatMap((o) => giftLines(o)); if (!gl.length) return ''; const n = gl.reduce((s, l) => s + l.qty, 0); const cost = gl.reduce((s, l) => s + giftCostOf(l), 0); const by = {}; gl.forEach((l) => { by[l.itemName] = (by[l.itemName] || 0) + l.qty; });
+      return `<div class="card"><h3 style="margin-bottom:6px">${ico('gift')} الهدايا</h3><div class="row between"><span>${n} هدية</span><span class="muted">${cost ? 'تكلفة تقريبية ' + money(Math.round(cost * 100) / 100) : 'التكلفة تظهر لما تربطين الهدية بصنف له وصفة'}</span></div>${Object.entries(by).map(([k, v]) => `<div class="small muted">${esc(k)} × ${v}</div>`).join('')}</div>`; })()}
     <div class="row"><a class="btn goldline grow" href="#/finance/expenses">${ico('cash')} المصروفات</a><a class="btn ghost grow" href="#/finance/recurring">${ico('clock')} الاشتراكات</a></div>
   </div>`;
   app.querySelectorAll('[data-p]').forEach((b) => (b.onclick = () => { FIN_P = b.dataset.p; Screens.finance(); }));
 };
 Screens.expenses = () => {
   chrome('المصروفات', { backBtn: true, parent: '#/finance' });
-  const list = S.expenses.slice().sort((a, b) => b.at.localeCompare(a.at)).slice(0, 60);
+  const list = S.expenses.slice().sort((a, b) => b.at.localeCompare(a.at)).slice(0, 300);
   let cat = 'أخرى';
   app.innerHTML = `<div class="stack" style="gap:14px">
     <div class="card stack" style="gap:8px"><h3>مصروف جديد</h3>
@@ -1159,9 +1196,13 @@ Screens.expenses = () => {
       <div class="chips" id="eCats">${EXP_CATS.filter((c) => c !== 'مشتريات').map((c) => `<button class="chip ${cat === c ? 'on' : ''}" data-c="${c}">${c}</button>`).join('')}</div>
       <input class="in" id="eNote" placeholder="ملاحظة: غاز، علب من الجملة…"><button class="btn" id="eAdd">إضافة</button>
       <div class="small muted">مشتريات المكونات تُسجَّل من المخزون (زر "شراء") لتُحدَّث التكلفة تلقائياً.</div></div>
-    ${list.map((e) => `<div class="row between" style="padding:6px 0;border-bottom:1px solid var(--line)"><div class="grow"><div>${esc(e.note) || e.category}</div><div class="small muted">${fmtShort(e.at)} · ${e.category}${e.recurringId ? ' · تلقائي' : ''}</div></div><span class="strong">${money(e.amount)}</span><button class="btn ghost sm" data-x="${e.id}">×</button></div>`).join('') || '<div class="muted center">لا مصروفات بعد.</div>'}</div>`;
+    ${list.map((e) => `<div class="row between" style="padding:6px 0;border-bottom:1px solid var(--line)"><div class="grow" data-ed="${e.id}" style="cursor:pointer"><div>${esc(e.note) || e.category}</div><div class="small muted">${fmtShort(e.at)} · ${e.category}${e.recurringId ? ' · تلقائي' : ''}</div></div><span class="strong">${money(e.amount)}</span><button class="btn ghost sm" data-x="${e.id}">×</button></div>`).join('') || '<div class="muted center">لا مصروفات بعد.</div>'}</div>`;
   app.querySelectorAll('[data-c]').forEach((b) => (b.onclick = () => { cat = b.dataset.c; app.querySelectorAll('[data-c]').forEach((x) => x.classList.toggle('on', x === b)); }));
   $('#eAdd').onclick = () => { const a = +$('#eAmt').value || 0; if (a <= 0) return toast('اكتبي المبلغ'); S.expenses.push({ id: uid(), at: new Date($('#eDate').value + 'T12:00').toISOString(), amount: a, category: cat, note: $('#eNote').value.trim() }); persist(); Screens.expenses(); };
+  app.querySelectorAll('[data-ed]').forEach((el) => (el.onclick = () => { const e = S.expenses.find((x) => x.id === el.dataset.ed); if (!e) return;
+    sheet(`<h2>تعديل المصروف</h2><div class="stack" style="gap:12px;margin-top:10px"><div class="row"><label class="f grow"><span>المبلغ</span><input class="in big" id="xA" type="number" inputmode="decimal" value="${e.amount}"></label><label class="f grow"><span>التاريخ</span><input class="in" id="xD" type="date" value="${dayISO(e.at)}"></label></div>
+      <input class="in" id="xN" value="${esc(e.note || '')}" placeholder="ملاحظة"><button class="btn" id="xOk">حفظ</button>${e.ingredientId ? '<div class="small muted">تعديل المبلغ هنا ما يغيّر تكلفة المكوّن في المخزون.</div>' : ''}</div>`, () => {
+      $('#xOk').onclick = () => { const a = +$('#xA').value; if (a > 0) e.amount = a; const dv = $('#xD').value; if (dv && dv !== dayISO(e.at)) e.at = new Date(dv + 'T12:00').toISOString(); e.note = $('#xN').value.trim(); persist(); closeSheet(); Screens.expenses(); }; }); }));
   app.querySelectorAll('[data-x]').forEach((b) => (b.onclick = () => { if (confirm('حذف المصروف؟')) { S.expenses = S.expenses.filter((e) => e.id !== b.dataset.x); persist(); Screens.expenses(); } }));
 };
 Screens.recurring = () => {
@@ -1186,7 +1227,7 @@ Screens.orderPrep = (id) => {
   if (!o) { go('#/orders'); return; }
   chrome(`تحضير #${pad3(o.number)}`, { backBtn: true, parent: `#/order/${o.id}` });
   const m = methodById(o.deliveryMethodId); const methodName = m ? m.name : o.fulfilment === 'pickup' ? 'استلام' : '';
-  const items = o.lines.filter((l) => l.kind === 'item'), addons = o.lines.filter((l) => l.kind === 'addon');
+  const items = o.lines.filter((l) => l.kind === 'item' || l.kind === 'gift'), addons = o.lines.filter((l) => l.kind === 'addon');
   const done = new Set(o.prepDone || []);
   const late = new Date(o.dueAt) < Date.now();
   const ingRows = (acc) => Object.entries(acc).map(([iid, q]) => ({ ing: ingById(iid), q })).filter((x) => x.ing).sort((a, b) => a.ing.name.localeCompare(b.ing.name))
@@ -1202,7 +1243,7 @@ Screens.orderPrep = (id) => {
       ${items.map((l, i) => { const acc = expand(l.itemId, l.variantName, l.qty, {}); const rows = ingRows(acc); const rk = encodeURIComponent(recipeKey(l.itemId, l.variantName));
         return `<div class="prep-item ${done.has(i) ? 'done' : ''}" data-pi="${i}">
           <div class="row"><button class="tick" data-tick="${i}" aria-label="تم">${ico('check')}</button>
-            <div class="grow"><div class="strong" style="font-size:17px">${esc(l.itemName)}${l.variantName ? ' — ' + esc(l.variantName) : ''}</div></div><span class="num gold" style="font-size:20px">× ${l.qty}</span><span class="chev">⌄</span></div>
+            <div class="grow"><div class="strong" style="font-size:17px">${esc(l.itemName)}${l.variantName ? ' — ' + esc(l.variantName) : ''}</div>${l.kind === 'gift' ? `<div class="small gold">${ico('gift')} هدية</div>` : ''}</div><span class="num gold" style="font-size:20px">× ${l.qty}</span><span class="chev">⌄</span></div>
           <div class="ings">${rows || `<div class="small muted">لا توجد وصفة لهذا الصنف بعد. <a href="#/inventory/recipes/${rk}">أضيفي الوصفة</a></div>`}</div></div>`; }).join('')}
     </div>
     ${addons.length ? `<div class="card"><h3 style="margin-bottom:6px">الإضافات والصوصات</h3>${addons.map((l) => `<div class="row between" style="padding:3px 0"><span>${esc(l.itemName)}</span><span class="strong">× ${l.qty}</span></div>`).join('')}</div>` : ''}
@@ -1245,7 +1286,7 @@ const addDays = (dayStr, n) => { const [y, mo, d] = dayStr.split('-').map(Number
 const monthNameAr = (d) => d.toLocaleDateString(LATN, { month: 'long' });
 function monthStats(a, b) {
   const R = [a, b];
-  const del = S.orders.filter((o) => o.status === 'delivered' && o.deliveredAt && inRange(o.deliveredAt, R));
+  const del = S.orders.filter((o) => o.status === 'delivered' && inRange(o.dueAt, R));
   const revenue = del.reduce((s, o) => s + o.total, 0);
   const cogs = del.reduce((s, o) => s + (o.cogs || 0), 0);
   const delivCost = del.reduce((s, o) => s + (o.deliveryCost || 0), 0);
@@ -1375,6 +1416,108 @@ Screens.notify = () => {
   app.querySelectorAll('[data-nt]').forEach((b) => (b.onclick = () => { n.types[b.dataset.nt] = !n.types[b.dataset.nt]; persist(false); syncNotify(); Screens.notify(); }));
   const saveSrv = () => { n.server = $('#nServer').value.trim(); n.key = $('#nKey').value.trim(); persist(false); };
   $('#nServer').onchange = saveSrv; $('#nKey').onchange = saveSrv;
+};
+
+// ---------- v7: gifts (editable list, chosen per order) ----------
+const giftById = (id) => (S.gifts || []).find((g) => g.id === id);
+const giftLines = (o) => (o.lines || []).filter((l) => l.kind === 'gift');
+Screens.gifts = () => {
+  chrome('الهدايا', { backBtn: true, parent: '#/settings' });
+  const menuOpts = (sel) => `<option value="">— بدون ربط —</option>${S.menu.map((m) => `<option value="${m.id}" ${sel === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}`;
+  app.innerHTML = `<div class="stack pad-sticky" style="gap:14px">
+    <div class="small muted">الهدايا اللي تعطينها مع الطلبات. تختارينها وقت تسجيل الطلب (خطوة الإضافات) وما تأثر على السعر. إذا ربطتي الهدية بصنف من المنيو، تنخصم مكوناته من المخزون وتنحسب تكلفتها.</div>
+    ${(S.gifts || []).map((g) => { const m = S.menu.find((x) => x.id === g.menuItemId); const used = S.orders.reduce((s, o) => s + giftLines(o).filter((l) => l.giftId === g.id).reduce((a, l) => a + l.qty, 0), 0);
+      return `<div class="item"><span class="ic" style="width:44px;height:44px;border-radius:50%;background:var(--raised);display:flex;align-items:center;justify-content:center;color:var(--gold)">${ico('gift')}</span>
+        <div class="grow" data-edit="${g.id}" style="cursor:pointer"><div class="strong ${g.active ? '' : 'muted'}">${esc(g.name)}</div><div class="small muted">${m ? 'مربوطة بـ ' + esc(m.name) : 'بدون ربط بالمنيو'}${used ? ` · انعطت ${used} مرة` : ''}</div></div>
+        ${switchBtn(g.active, `data-t="${g.id}"`)}</div>`; }).join('') || emptyBlock('لا توجد هدايا', 'أضيفي أول هدية من تحت.')}
+    <div class="divider"></div><span class="small strong muted">هدية جديدة</span>
+    <input class="in" id="gName" placeholder="مثلاً: بوريتو روبيان">
+    <label class="f"><span class="small muted">ربطها بصنف من المنيو (اختياري)</span><select class="in" id="gMenu">${menuOpts('')}</select></label>
+    <button class="btn" id="gAdd">${ico('plus')} إضافة الهدية</button></div>`;
+  $('#gName').oninput = () => { const m = S.menu.find((x) => x.name === $('#gName').value.trim()); if (m) $('#gMenu').value = m.id; };
+  $('#gAdd').onclick = () => { const n = $('#gName').value.trim(); if (!n) return toast('اكتبي اسم الهدية'); S.gifts.push({ id: uid(), name: n, menuItemId: $('#gMenu').value || null, active: true, sort: S.gifts.length }); persist(); Screens.gifts(); };
+  app.querySelectorAll('[data-t]').forEach((b) => (b.onclick = () => { const g = giftById(b.dataset.t); g.active = !g.active; persist(); Screens.gifts(); }));
+  app.querySelectorAll('[data-edit]').forEach((el) => (el.onclick = () => { const g = giftById(el.dataset.edit);
+    sheet(`<h2>تعديل الهدية</h2><div class="stack" style="gap:12px;margin-top:10px"><input class="in" id="eName" value="${esc(g.name)}"><select class="in" id="eMenu">${menuOpts(g.menuItemId)}</select>
+      <button class="btn" id="eOk">حفظ</button><button class="btn danger" id="eDel">حذف الهدية</button><div class="small muted">الطلبات القديمة تحتفظ باسم الهدية حتى لو حذفتيها.</div></div>`, () => {
+      $('#eOk').onclick = () => { g.name = $('#eName').value.trim() || g.name; g.menuItemId = $('#eMenu').value || null; persist(); closeSheet(); Screens.gifts(); };
+      $('#eDel').onclick = () => { S.gifts = S.gifts.filter((x) => x.id !== g.id); persist(); closeSheet(); Screens.gifts(); }; }); }));
+};
+const giftCostOf = (l) => consumptionCost(expand(l.itemId, l.variantName, l.qty, {}));
+
+// ---------- v7: stock count (الجرد) ----------
+const COUNT_KINDS = [['ingredient', 'المكونات'], ['packaging', 'التغليف']];
+Screens.stockCount = () => {
+  chrome('جرد المخزون', { backBtn: true, parent: '#/settings' });
+  if (!S.countDraft) S.countDraft = { startedAt: nowISO(), v: {} };
+  const D = S.countDraft; const ings = S.ingredients.filter((i) => i.active !== false);
+  const done = () => ings.filter((i) => D.v[i.id] !== undefined && D.v[i.id] !== '').length;
+  const F = Screens.stockCount.filter || 'all';
+  const show = (i) => F === 'all' || (F === 'left' ? (D.v[i.id] === undefined || D.v[i.id] === '') : (D.v[i.id] !== undefined && D.v[i.id] !== ''));
+  const last = (S.counts || [])[S.counts.length - 1];
+  app.innerHTML = `<div class="stack pad-sticky" style="gap:14px">
+    <div class="card stack" style="gap:6px"><div class="strong">عدّي الموجود فعلياً واكتبيه</div>
+      <div class="small muted">اللي ما تكتبين له رقم يبقى مثل ما هو. تقدرين توقفين وترجعين، اللي كتبتيه ينحفظ تلقائياً.${last ? ` آخر جرد: ${fmtShort(last.at)}.` : ''}</div>
+      <div class="row between"><span class="small gold strong" id="cProg">تم ${done()} من ${ings.length}</span><a class="small" href="#/settings/count/history">${ico('clock')} الجرد السابق والمقارنة</a></div></div>
+    <div class="chips">${[['all', 'الكل'], ['left', 'باقي'], ['done', 'تم']].map(([k, l]) => `<button class="chip ${F === k ? 'on' : ''}" data-f="${k}">${l}</button>`).join('')}</div>
+    ${COUNT_KINDS.map(([k, l]) => { const list = ings.filter((i) => (i.kind || 'ingredient') === k && show(i)); return list.length ? `<h3>${l}</h3>${list.map((i) => { const v = D.v[i.id];
+      return `<div class="item count-row ${v !== undefined && v !== '' ? 'counted' : ''}" data-row="${i.id}"><div class="grow"><div class="strong">${esc(i.name)}</div><div class="small muted">بالتطبيق: ${fmtQty(i.qty, i.unit)}</div></div>
+        <button class="btn ghost sm" data-zero="${i.id}" style="padding:8px 10px">خلص</button>
+        <input class="in" style="width:96px;text-align:center" type="number" inputmode="decimal" step="any" data-in="${i.id}" value="${v ?? ''}" placeholder="—"><span class="small muted" style="width:40px">${unitLabel(i.unit)}</span></div>`; }).join('')}` : ''; }).join('') || emptyBlock('لا شيء هنا')}
+    <a class="small" href="#/inventory/new">${ico('plus')} مكوّن مو موجود؟ أضيفيه</a>
+  </div>
+  <div class="sticky"><button class="btn" id="cSave">اعتماد الجرد</button></div>`;
+  tabsEl.style.display = 'none';
+  const prog = () => { $('#cProg').textContent = `تم ${done()} من ${ings.length}`; };
+  app.querySelectorAll('[data-in]').forEach((inp) => (inp.oninput = () => { const v = inp.value.trim(); if (v === '') delete D.v[inp.dataset.in]; else D.v[inp.dataset.in] = +v; inp.closest('.count-row').classList.toggle('counted', v !== ''); persist(false); prog(); }));
+  app.querySelectorAll('[data-zero]').forEach((b) => (b.onclick = () => { const inp = app.querySelector(`[data-in="${b.dataset.zero}"]`); inp.value = 0; inp.oninput(); }));
+  app.querySelectorAll('[data-f]').forEach((b) => (b.onclick = () => { Screens.stockCount.filter = b.dataset.f; Screens.stockCount(); }));
+  $('#cSave').onclick = () => {
+    const rows = ings.filter((i) => D.v[i.id] !== undefined && D.v[i.id] !== '' && !isNaN(D.v[i.id])).map((i) => ({ i, before: i.qty, counted: +D.v[i.id] }));
+    if (!rows.length) return toast('اكتبي كمية مكوّن واحد على الأقل');
+    const big = rows.map((r) => ({ ...r, diff: r.counted - r.before })).filter((r) => Math.abs(r.diff) > 1e-9).sort((a, b) => Math.abs(b.diff * (b.i.unitCost || 0)) - Math.abs(a.diff * (a.i.unitCost || 0))).slice(0, 8);
+    sheet(`<h2>اعتماد الجرد</h2><p class="muted">بتتحدث كميات <b>${rows.length}</b> مكوّن للأرقام اللي كتبتيها. الطلبات والمصاريف ما تتغير.</p>
+      ${big.length ? `<div class="small strong muted" style="margin-top:6px">أكبر الفروقات</div>${big.map((r) => `<div class="row between small" style="padding:3px 0"><span>${esc(r.i.name)}</span><span class="muted">${fmtQty(r.before, r.i.unit)} ← <b style="color:var(--text)">${fmtQty(r.counted, r.i.unit)}</b></span></div>`).join('')}` : ''}
+      <div style="height:14px"></div><button class="btn" id="cOk">اعتماد</button>`, () => {
+      $('#cOk').onclick = () => {
+        const at = nowISO(); const id = uid();
+        const lines = rows.map(({ i, before, counted }) => { const d = counted - i.qty; if (Math.abs(d) > 1e-9) S.moves.push({ id: uid(), at, ingredientId: i.id, qty: d, reason: 'count', countId: id }); i.qty = counted; i.lastCountAt = at; return { ingredientId: i.id, name: i.name, unit: i.unit, before, counted }; });
+        S.counts.push({ id, at, startedAt: D.startedAt, lines }); S.countDraft = null; persist(); closeSheet(); go(`#/settings/count/${id}`); };
+    });
+  };
+};
+Screens.countHistory = () => {
+  chrome('الجرد السابق', { backBtn: true, parent: '#/settings/count' });
+  const list = [...(S.counts || [])].reverse();
+  app.innerHTML = `<div class="stack" style="gap:10px">${list.map((c) => `<a class="srow" href="#/settings/count/${c.id}"><span class="ic">${ico('box')}</span><div class="grow"><div class="strong">جرد ${fmtDay(c.at)}</div><div class="small muted">${c.lines.length} مكوّن</div></div><span class="muted">‹</span></a>`).join('') || emptyBlock('ما في جرد سابق', 'أول جرد تعتمدينه يظهر هنا.')}</div>`;
+};
+// Compare what really went out between two counts with what the recipes said would go out.
+function countCompare(prev, cur) {
+  const t0 = prev.at, t1 = cur.at; const inRangeM = (m) => m.at > t0 && m.at <= t1;
+  const ordersBetween = new Set(S.moves.filter((m) => m.reason === 'order' && inRangeM(m)).map((m) => m.orderId)).size;
+  return cur.lines.map((l) => { const p = prev.lines.find((x) => x.ingredientId === l.ingredientId); if (!p) return null;
+    const mv = S.moves.filter((m) => m.ingredientId === l.ingredientId && inRangeM(m));
+    const bought = mv.filter((m) => m.reason === 'restock').reduce((s, m) => s + m.qty, 0);
+    const est = -mv.filter((m) => m.reason === 'order').reduce((s, m) => s + m.qty, 0);
+    const actual = p.counted + bought - l.counted;
+    return { ...l, bought, est, actual, perOrder: ordersBetween ? actual / ordersBetween : null, estPerOrder: ordersBetween ? est / ordersBetween : null }; }).filter(Boolean).map((r) => ({ ...r, orders: ordersBetween }));
+}
+Screens.countReport = (id) => {
+  const k = (S.counts || []).findIndex((c) => c.id === id); const c = S.counts[k];
+  if (!c) { go('#/settings/count/history'); return; }
+  chrome(`جرد ${fmtShort(c.at)}`, { backBtn: true, parent: '#/settings/count/history' });
+  const prev = k > 0 ? S.counts[k - 1] : null; const rows = prev ? countCompare(prev, c) : [];
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const verdict = (r) => { if (r.actual <= 0 && r.est <= 0) return ['muted', 'ما انصرف']; if (r.est <= 0) return ['red', 'ما لها وصفة تخصمها']; const q = r.actual / r.est;
+    return q > 1.15 ? ['red', `الفعلي أكثر بـ ${Math.round((q - 1) * 100)}٪ — زيدي الكمية في الوصفة`] : q < 0.85 ? ['red', `الفعلي أقل بـ ${Math.round((1 - q) * 100)}٪ — نقّصي الكمية في الوصفة`] : ['ok', 'الوصفة مضبوطة ✓']; };
+  app.innerHTML = `<div class="stack" style="gap:16px">
+    <div class="card"><div class="strong">تم اعتماد الجرد ✓</div><div class="small muted">${fmtDay(c.at)} ${fmtTime(c.at)} · ${c.lines.length} مكوّن</div></div>
+    ${prev ? `<div class="card"><h3 style="margin-bottom:4px">الاستهلاك الفعلي مقابل الوصفات</h3><div class="small muted" style="margin-bottom:8px">من جرد ${fmtShort(prev.at)} إلى اليوم · ${rows[0] ? rows[0].orders : 0} طلب موصّل. الفعلي = الجرد السابق + المشتريات − الجرد الحالي.</div>
+      ${rows.map((r) => { const [cl, t] = verdict(r); return `<div style="padding:8px 0;border-bottom:1px dashed var(--line)"><div class="row between"><span class="strong">${esc(r.name)}</span><span class="small">فعلي <b>${fmtQty(r2(r.actual), r.unit)}</b> · الوصفة ${fmtQty(r2(r.est), r.unit)}</span></div>
+        ${r.perOrder != null ? `<div class="small muted">لكل طلب: فعلي ${fmtQty(r2(r.perOrder), r.unit)} · الوصفة ${fmtQty(r2(r.estPerOrder), r.unit)}</div>` : ''}<div class="small ${cl}">${t}</div></div>`; }).join('') || '<div class="small muted">ما في مكونات مشتركة بين الجردين.</div>'}</div>`
+      : `<div class="card"><h3 style="margin-bottom:4px">هذا أول جرد</h3><div class="small muted">صارت كميات المخزون الحين مضبوطة. بعد الجرد الجاي، هنا تظهر مقارنة بين اللي انصرف فعلاً واللي تقدّره الوصفات لكل طلب، عشان تضبطين الوصفات.</div></div>`}
+    <div class="card"><h3 style="margin-bottom:6px">الكميات</h3>${c.lines.map((l) => `<div class="row between small" style="padding:3px 0"><span>${esc(l.name)}</span><span class="muted">${fmtQty(r2(l.before), l.unit)} ← <b style="color:var(--text)">${fmtQty(l.counted, l.unit)}</b></span></div>`).join('')}</div>
+  </div>`;
 };
 
 // ---------- Boot ----------

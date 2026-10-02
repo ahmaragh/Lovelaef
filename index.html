@@ -207,6 +207,13 @@ nav.tabs a .ico{width:22px;height:22px;display:block;margin:0 auto 2px}
 .prep-item.done .tick{background:var(--ok);border-color:var(--ok);color:var(--text)}
 .prep-item.done .strong{text-decoration:line-through;color:var(--muted)}
 details summary{cursor:pointer}
+
+/* v7: stock count + gifts */
+.count-row{border-bottom:1px solid var(--line);padding:10px 0}
+.count-row.counted .strong{color:var(--gold)}
+.count-row.counted input{border-color:var(--gold-dim)}
+.round.gift .c{color:var(--red)}
+.round.gift .p{color:var(--gold)}
 </style>
 </head>
 <body>
@@ -214,7 +221,7 @@ details summary{cursor:pointer}
 <main id="app"></main>
 <nav class="tabs" id="tabs"></nav>
 <div id="overlay"></div>
-<script src="photos.js?v=6"></script>
-<script src="app.js?v=6"></script>
+<script src="photos.js?v=7"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>
