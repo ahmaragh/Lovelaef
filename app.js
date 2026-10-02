@@ -79,6 +79,12 @@ function oneTimeFixes() {
       S.fixes.mergeCrab = nowISO();
     }
   }
+  if (!S.fixes.ownerLoan) {
+    if (!Array.isArray(S.capital)) S.capital = [];
+    S.capital.push({ id: uid(), at: '2026-08-20T08:00:00.000Z', amount: 2300, kind: 'loan', note: 'تمويل من صاحبة المشروع لبدء ورقة حُب' });
+    S.expenses.push({ id: uid(), at: '2026-08-26T09:00:00.000Z', amount: 611.5, category: 'أخرى', note: 'مصاريف تأسيس غير مسجلة (من تمويل 2,300 ناقص 1,688.50 المسجل قبل الإطلاق)' });
+    S.fixes.ownerLoan = nowISO();
+  }
   if (!S.fixes.hideEdamame) {
     const dup = S.menu.find((m) => m.name === 'ادمامي'), keep = S.menu.find((m) => m.name === 'ادمامي كوب');
     if (dup && keep && !S.orders.some((o) => o.lines.some((l) => l.itemId === dup.id))) { dup.active = false; S.fixes.hideEdamame = nowISO(); }
@@ -88,7 +94,7 @@ function migrate() { if (!S.settings) S.settings = {}; if (!S.settings.onedrive)
   S.methods.forEach((m) => { if (!('photo' in m)) m.photo = ''; if (m.name === 'بارسل') m.name = 'مرسول'; if (!m.photo && typeof PRESET_PHOTOS !== 'undefined' && PRESET_PHOTOS[m.kind] && (m.kind !== 'courier' || m.name === 'مرسول')) m.photo = PRESET_PHOTOS[m.kind]; });
   ['ingredients', 'recipes', 'perOrder', 'moves', 'expenses', 'recurring'].forEach((k) => { if (!Array.isArray(S[k])) S[k] = []; });
   if (!Array.isArray(S.gifts)) { S.gifts = [['بوريتو روبيان'], ['كوب سوشي روبيان'], ['شيتوس رول (دجاج)']].map(([n], i) => { const m = S.menu.find((x) => x.name === n); return { id: uid(), name: n, menuItemId: m ? m.id : null, active: true, sort: i }; }); }
-  if (!Array.isArray(S.counts)) S.counts = []; if (!('countDraft' in S)) S.countDraft = null;
+  if (!Array.isArray(S.counts)) S.counts = []; if (!('countDraft' in S)) S.countDraft = null; if (!Array.isArray(S.capital)) S.capital = [];
   oneTimeFixes();
   if (!S.settings.github) S.settings.github = { repo: '', token: '', connected: false, lastBackup: '', error: '', sha: '', lastDaily: '' }; if (!('lastExport' in S.settings)) S.settings.lastExport = ''; if (!('lastChange' in S)) S.lastChange = ''; }
 let backupTimer = null;
@@ -1182,9 +1188,11 @@ Screens.finance = () => {
       ${items.length && !items.some(([, v]) => v.cost) ? '<div class="small muted" style="margin-top:6px">أضيفي الوصفات وأسعار الشراء ليظهر الهامش.</div>' : ''}</div>
     ${(() => { const gl = del.flatMap((o) => giftLines(o)); if (!gl.length) return ''; const n = gl.reduce((s, l) => s + l.qty, 0); const cost = gl.reduce((s, l) => s + giftCostOf(l), 0); const by = {}; gl.forEach((l) => { by[l.itemName] = (by[l.itemName] || 0) + l.qty; });
       return `<div class="card"><h3 style="margin-bottom:6px">${ico('gift')} الهدايا</h3><div class="row between"><span>${n} هدية</span><span class="muted">${cost ? 'تكلفة تقريبية ' + money(Math.round(cost * 100) / 100) : 'التكلفة تظهر لما تربطين الهدية بصنف له وصفة'}</span></div>${Object.entries(by).map(([k, v]) => `<div class="small muted">${esc(k)} × ${v}</div>`).join('')}</div>`; })()}
+    ${balanceCard()}
     <div class="row"><a class="btn goldline grow" href="#/finance/expenses">${ico('cash')} المصروفات</a><a class="btn ghost grow" href="#/finance/recurring">${ico('clock')} الاشتراكات</a></div>
   </div>`;
   app.querySelectorAll('[data-p]').forEach((b) => (b.onclick = () => { FIN_P = b.dataset.p; Screens.finance(); }));
+  if ($('#repayBtn')) $('#repayBtn').onclick = repaySheet;
 };
 Screens.expenses = () => {
   chrome('المصروفات', { backBtn: true, parent: '#/finance' });
@@ -1444,6 +1452,44 @@ Screens.gifts = () => {
       $('#eDel').onclick = () => { S.gifts = S.gifts.filter((x) => x.id !== g.id); persist(); closeSheet(); Screens.gifts(); }; }); }));
 };
 const giftCostOf = (l) => consumptionCost(expand(l.itemId, l.variantName, l.qty, {}));
+
+// ---------- v7: owner's money & balance (from the first day) ----------
+function balanceSheet() {
+  const cap = S.capital || [];
+  const lent = cap.filter((c) => c.kind === 'loan').reduce((s, c) => s + c.amount, 0);
+  const repaid = cap.filter((c) => c.kind === 'repay').reduce((s, c) => s + c.amount, 0);
+  const del = S.orders.filter((o) => o.status === 'delivered');
+  const sales = del.reduce((s, o) => s + o.total, 0);
+  const collected = S.orders.reduce((s, o) => s + (o.paidAmount || 0), 0);
+  const cashIn = S.orders.filter((o) => o.paymentMethod === 'cash').reduce((s, o) => s + (o.paidAmount || 0), 0);
+  const spent = S.expenses.reduce((s, e) => s + e.amount, 0);
+  const delivery = del.reduce((s, o) => s + (o.deliveryCost || 0), 0);
+  const profit = sales - spent - delivery;
+  const money = lent - repaid + collected - spent - delivery;
+  return { lent, repaid, owed: lent - repaid, sales, collected, cashIn, spent, delivery, profit, money, unpaid: sales - collected };
+}
+function balanceCard() {
+  const b = balanceSheet(); if (!b.lent && !S.capital.length) return '';
+  const r = (n) => money(Math.round(n * 100) / 100);
+  return `<div class="card stack" style="gap:6px"><h3>الميزانية من البداية</h3>
+    <div class="row between"><span>الفلوس اللي المفروض موجودة</span><span class="gold strong">${r(b.money)}</span></div>
+    <div class="row between small muted" style="padding-right:12px"><span>منها كاش استلمتيه من العملاء</span><span>${r(b.cashIn)}</span></div>
+    <div class="row between small muted" style="padding-right:12px"><span>والباقي في الحساب تقريباً</span><span>${r(b.money - b.cashIn)}</span></div>
+    <div class="divider"></div>
+    <div class="row between"><span>دين المشروع لكِ (التمويل)</span><span class="strong">${r(b.owed)}</span></div>
+    ${b.repaid ? `<div class="row between small muted" style="padding-right:12px"><span>تم سداد</span><span>${r(b.repaid)} من ${r(b.lent)}</span></div>` : ''}
+    <div class="row between"><span>ربح المشروع من البداية</span><span class="strong ${b.profit >= 0 ? 'ok' : 'red'}">${r(b.profit)}</span></div>
+    ${b.unpaid > 0 ? `<div class="row between small muted"><span>مبيعات لسا ما انحصّلت</span><span>${r(b.unpaid)}</span></div>` : ''}
+    <div class="small faint">الفلوس = الدين اللي لكِ + الربح${b.unpaid > 0 ? ' − اللي ما انحصّل' : ''}. لو حسابك فيه أكثر أو أقل، الفرق مصروف أو دخل ما تسجّل.</div>
+    ${b.owed > 0 ? '<button class="btn ghost sm" id="repayBtn" style="align-self:flex-start">تسجيل سداد لكِ من المشروع</button>' : ''}</div>`;
+}
+function repaySheet() {
+  const b = balanceSheet();
+  sheet(`<h2>سداد من المشروع لكِ</h2><p class="small muted">لما تسحبين من فلوس المشروع لنفسك لتسديد التمويل. ما يأثر على الربح، بس ينقص الدين والفلوس الموجودة. المتبقي ${money(b.owed)}.</p>
+    <div class="row"><label class="f grow"><span>المبلغ</span><input class="in big" id="rpA" type="number" inputmode="decimal" placeholder="0"></label><label class="f grow"><span>التاريخ</span><input class="in" id="rpD" type="date" value="${dayISO()}"></label></div>
+    <div style="height:14px"></div><button class="btn" id="rpOk">تسجيل</button>`, () => { $('#rpOk').onclick = () => { const a = +$('#rpA').value || 0; if (a <= 0) return toast('اكتبي المبلغ');
+      S.capital.push({ id: uid(), at: new Date($('#rpD').value + 'T12:00').toISOString(), amount: Math.min(a, b.owed), kind: 'repay', note: 'سداد للمالكة' }); persist(); closeSheet(); Screens.finance(); }; });
+}
 
 // ---------- v7: stock count (الجرد) ----------
 const COUNT_KINDS = [['ingredient', 'المكونات'], ['packaging', 'التغليف']];
