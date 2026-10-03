@@ -81,9 +81,13 @@ function oneTimeFixes() {
   }
   if (!S.fixes.ownerLoan) {
     if (!Array.isArray(S.capital)) S.capital = [];
-    S.capital.push({ id: uid(), at: '2026-08-20T08:00:00.000Z', amount: 2300, kind: 'loan', note: 'تمويل من صاحبة المشروع لبدء ورقة حُب' });
+    S.capital.push({ id: uid(), at: '2026-08-20T08:00:00.000Z', amount: 2139, kind: 'loan', note: 'تمويل من صاحبة المشروع = تكاليف ما قبل الإطلاق (1,688.50 مسجلة + 450.50 غير مسجلة)' });
     S.expenses.push({ id: uid(), at: '2026-08-26T09:00:00.000Z', amount: 450.5, category: 'أخرى', note: 'مصاريف تأسيس غير مسجلة (تسوية مع رصيد الحساب بعد تسجيل الإعلانات)' });
     S.fixes.ownerLoan = nowISO();
+  }
+  if (!S.fixes.loanIsLaunchCost) { // the loan equals the pre-launch costs (2,139), not the rough 2,300
+    (S.capital || []).forEach((c) => { if (c.kind === 'loan' && c.amount === 2300 && c.at === '2026-08-20T08:00:00.000Z') { c.amount = 2139; c.note = 'تمويل من صاحبة المشروع = تكاليف ما قبل الإطلاق (1,688.50 مسجلة + 450.50 غير مسجلة)'; } });
+    S.fixes.loanIsLaunchCost = nowISO();
   }
   if (!S.fixes.hideEdamame) {
     const dup = S.menu.find((m) => m.name === 'ادمامي'), keep = S.menu.find((m) => m.name === 'ادمامي كوب');
